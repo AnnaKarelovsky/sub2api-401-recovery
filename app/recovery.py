@@ -62,10 +62,16 @@ class RecoveryCoordinator:
         self.browser = PlaywrightOAuthRunner(self.settings)
         self.automatic_browser = AutomaticOAuthRunner(self.settings)
 
-    def scan(self) -> dict[str, int]:
+    def scan(self, *, source: str = "worker") -> dict[str, int]:
         if not self._scan_lock.acquire(blocking=False):
+            self.db.record_event(
+                "scan_skipped",
+                "Account scan skipped because another scan is already running",
+                {"source": source},
+            )
             return {"skipped": 1}
         try:
+            self.db.record_event("scan_started", "Sub2API account scan started", {"source": source})
             accounts = self.sub2api.list_accounts()
             found = queued = auth_failures = 0
             remote_account_ids: set[int] = set()
@@ -185,6 +191,9 @@ class RecoveryCoordinator:
             self.db.record_event("scan_completed", "Sub2API account scan completed", result)
             return result
         except Sub2APIError as exc:
+            self.db.record_event("scan_failed", "Sub2API account scan failed", {"reason": safe_error(exc)})
+            raise
+        except Exception as exc:
             self.db.record_event("scan_failed", "Sub2API account scan failed", {"reason": safe_error(exc)})
             raise
         finally:

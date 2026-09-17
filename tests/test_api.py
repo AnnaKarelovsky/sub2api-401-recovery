@@ -14,6 +14,7 @@ def test_health_login_and_dashboard(settings):
         dashboard = client.get("/api/v1/dashboard", headers={"Authorization": f"Bearer {token}"})
         assert dashboard.status_code == 200
         assert dashboard.json()["summary"]["accounts"] == 0
+        assert dashboard.json()["sync"]["status"] == "never"
 
 
 def test_dashboard_settings_are_encrypted_and_reloadable(settings):

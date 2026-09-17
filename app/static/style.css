@@ -45,6 +45,9 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .workspace { margin: 0 auto; max-width: 1440px; padding: 38px clamp(18px, 4vw, 54px) 60px; }
 .page-heading { align-items: end; display: flex; justify-content: space-between; margin-bottom: 28px; }
 .page-heading h2 { font-size: 32px; letter-spacing: 0; margin: 0 0 2px; }
+.sync-meta { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 10px; margin-top: 10px; }
+.sync-meta span:first-child { color: var(--teal-dark); font-weight: 750; overflow-wrap: anywhere; }
+.sync-meta span + span::before { content: "·"; margin-right: 10px; }
 .metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 24px; }
 .metric { background: var(--paper); border: 1px solid var(--line); border-radius: 7px; padding: 18px; }
 .metric-label { color: var(--muted); font-size: 12px; }
@@ -52,7 +55,9 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .content-section { background: var(--paper); border: 1px solid var(--line); border-radius: 7px; margin-top: 18px; overflow: hidden; }
 .section-heading { align-items: center; display: flex; justify-content: space-between; padding: 19px 20px; }
 .section-heading h3 { font-size: 17px; margin: 0 0 2px; }
-.section-heading select { margin: 0; width: 160px; }
+.section-tools { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.section-tools input, .section-tools select { margin: 0; width: 190px; }
+.section-tools select { width: 160px; }
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; min-width: 780px; width: 100%; }
 th { background: #f7f9fa; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; padding: 10px 20px; text-align: left; text-transform: uppercase; }
@@ -112,6 +117,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .source-dot.dashboard { background: var(--teal); }
 .settings-actions { align-items: center; background: rgba(255, 255, 255, .96); border-top: 1px solid #edf1f2; bottom: 0; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; padding: 16px 0 0; position: sticky; z-index: 1; }
 .settings-actions .muted { font-size: 12px; }
+.button:disabled, .mini-button:disabled { cursor: wait; opacity: .6; }
 @media (max-width: 900px) {
   .metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .page-heading { align-items: flex-start; flex-direction: column; gap: 17px; }
@@ -127,7 +133,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
   .metric { padding: 13px; }
   .metric-value { font-size: 23px; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 13px; }
-  .section-heading select { width: 100%; }
+  .section-tools { justify-content: stretch; width: 100%; }
+  .section-tools input, .section-tools select { flex: 1 1 180px; width: auto; }
   .task-meta { grid-template-columns: 1fr; }
   .settings-form { padding: 0 16px 16px; }
   .settings-fields { grid-template-columns: 1fr; }

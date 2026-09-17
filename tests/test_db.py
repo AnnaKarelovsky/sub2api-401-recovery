@@ -82,3 +82,21 @@ def test_account_scan_reconciles_removed_and_readded_accounts(database):
 
     database.upsert_account_snapshot({"sub2api_account_id": 8, "email": "eight@example.com", "status": "active"})
     assert {row["sub2api_account_id"] for row in database.list_accounts()} == {7, 8}
+
+
+def test_scan_status_exposes_only_safe_sync_metadata(database):
+    assert database.scan_status() == {"status": "never", "last_event_at": None}
+
+    database.record_event("scan_started", "scan started", {"source": "worker", "secret": "hidden"})
+    assert database.scan_status()["status"] == "running"
+
+    database.record_event(
+        "scan_completed",
+        "scan completed",
+        {"found": 3, "auth_failures": 1, "queued": 1, "removed": 2, "secret": "hidden"},
+    )
+    status = database.scan_status()
+    assert status["status"] == "success"
+    assert status["found"] == 3
+    assert status["removed"] == 2
+    assert "secret" not in status
