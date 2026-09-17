@@ -76,6 +76,7 @@ class Database:
                         last_recovery_at TEXT,
                         last_test_at TEXT,
                         last_seen_at TEXT,
+                        remote_present INTEGER NOT NULL DEFAULT 1,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
@@ -170,6 +171,10 @@ class Database:
                 if "account_type" not in columns:
                     conn.execute(
                         "ALTER TABLE account_mapping ADD COLUMN account_type TEXT NOT NULL DEFAULT 'oauth'"
+                    )
+                if "remote_present" not in columns:
+                    conn.execute(
+                        "ALTER TABLE account_mapping ADD COLUMN remote_present INTEGER NOT NULL DEFAULT 1"
                     )
                 runtime_meta_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(runtime_settings_meta)")
@@ -368,14 +373,15 @@ class Database:
                 """
                 INSERT INTO account_mapping(
                     sub2api_account_id, account_type, email, username, status, last_seen_at,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    remote_present, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(sub2api_account_id) DO UPDATE SET
                     account_type = CASE WHEN excluded.account_type <> '' THEN excluded.account_type ELSE account_mapping.account_type END,
                     email = CASE WHEN excluded.email <> '' THEN excluded.email ELSE account_mapping.email END,
                     username = CASE WHEN excluded.username <> '' THEN excluded.username ELSE account_mapping.username END,
                     status = CASE WHEN account_mapping.status NOT IN ('unknown', 'observed')
                                   THEN account_mapping.status ELSE excluded.status END,
+                    remote_present = 1,
                     last_seen_at = excluded.last_seen_at,
                     updated_at = excluded.updated_at
                 """,
@@ -386,10 +392,33 @@ class Database:
                     str(snapshot.get("username") or snapshot.get("name") or ""),
                     str(snapshot.get("status") or "unknown"),
                     now,
+                    1,
                     now,
                     now,
                 ),
             )
+
+    def mark_accounts_missing(self, account_ids: set[int]) -> int:
+        """Hide local mappings absent from a successful remote account scan."""
+        now = utc_now()
+        with self.connect() as conn:
+            if account_ids:
+                placeholders = ", ".join("?" for _ in account_ids)
+                cursor = conn.execute(
+                    f"""
+                    UPDATE account_mapping
+                    SET remote_present = 0, updated_at = ?
+                    WHERE remote_present = 1
+                      AND sub2api_account_id NOT IN ({placeholders})
+                    """,
+                    (now, *sorted(account_ids)),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE account_mapping SET remote_present = 0, updated_at = ? WHERE remote_present = 1",
+                    (now,),
+                )
+        return max(0, int(cursor.rowcount))
 
     def get_mapping(self, account_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -403,6 +432,7 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT * FROM account_mapping
+                WHERE remote_present = 1
                 ORDER BY CASE status WHEN 'auth_failed' THEN 0
                                      WHEN 'reauth_required' THEN 1
                                      WHEN 'recovering' THEN 2 ELSE 3 END,
@@ -846,7 +876,7 @@ class Database:
     def dashboard_summary(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS count FROM account_mapping GROUP BY status"
+                "SELECT status, COUNT(*) AS count FROM account_mapping WHERE remote_present = 1 GROUP BY status"
             ).fetchall()
             tasks = conn.execute(
                 """

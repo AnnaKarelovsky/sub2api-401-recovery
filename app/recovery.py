@@ -68,12 +68,14 @@ class RecoveryCoordinator:
         try:
             accounts = self.sub2api.list_accounts()
             found = queued = auth_failures = 0
+            remote_account_ids: set[int] = set()
             for raw in accounts:
                 snapshot = normalize_snapshot(raw)
                 account_id = snapshot.get("sub2api_account_id")
                 if not account_id:
                     continue
                 found += 1
+                remote_account_ids.add(int(account_id))
                 self.db.upsert_account_snapshot(snapshot)
                 current = self.db.get_mapping(int(account_id)) or {}
                 local_credentials = self.db.load_credentials(int(account_id))
@@ -178,7 +180,8 @@ class RecoveryCoordinator:
                                     message="Account test detected an OAuth authentication failure",
                                     detail={"classification": probe.classification.category.value},
                                 )
-            result = {"found": found, "auth_failures": auth_failures, "queued": queued}
+            removed = self.db.mark_accounts_missing(remote_account_ids)
+            result = {"found": found, "auth_failures": auth_failures, "queued": queued, "removed": removed}
             self.db.record_event("scan_completed", "Sub2API account scan completed", result)
             return result
         except Sub2APIError as exc:

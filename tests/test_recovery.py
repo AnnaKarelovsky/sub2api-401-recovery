@@ -33,6 +33,15 @@ class FakeSub2API:
         return {}
 
 
+class ScanSub2API(FakeSub2API):
+    def __init__(self):
+        super().__init__()
+        self.accounts = [{"id": 7, "email": "present@example.com", "status": "active"}]
+
+    def list_accounts(self):
+        return self.accounts
+
+
 class FakeOAuth:
     def refresh_token(self, refresh_token, previous=None):
         return TokenSet(
@@ -50,6 +59,19 @@ class FakeOAuth:
 class ReauthOAuth:
     def refresh_token(self, refresh_token, previous=None):
         raise OAuthError("invalid_grant", error_code="invalid_grant", reauth_required=True)
+
+
+def test_scan_reconciles_local_accounts_with_remote_accounts(database, settings):
+    database.upsert_account_snapshot({"sub2api_account_id": 7, "email": "present@example.com", "status": "active"})
+    database.upsert_account_snapshot({"sub2api_account_id": 8, "email": "removed@example.com", "status": "active"})
+    settings.scan_probe_active_accounts = False
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, ScanSub2API(), FakeOAuth(), settings))
+
+    result = coordinator.scan()
+
+    assert result["found"] == 1
+    assert result["removed"] == 1
+    assert [row["sub2api_account_id"] for row in database.list_accounts()] == [7]
 
 
 def test_automatic_security_failure_is_requeued_with_backoff(database, settings):

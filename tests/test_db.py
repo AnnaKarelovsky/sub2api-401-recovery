@@ -70,3 +70,15 @@ def test_event_details_are_redacted(database):
         ).fetchone()[0]
     assert "live-token" not in detail
     assert "user:password" not in detail
+
+
+def test_account_scan_reconciles_removed_and_readded_accounts(database):
+    database.upsert_account_snapshot({"sub2api_account_id": 7, "email": "seven@example.com", "status": "active"})
+    database.upsert_account_snapshot({"sub2api_account_id": 8, "email": "eight@example.com", "status": "active"})
+
+    assert database.mark_accounts_missing({7}) == 1
+    assert [row["sub2api_account_id"] for row in database.list_accounts()] == [7]
+    assert database.get_mapping(8)["remote_present"] == 0
+
+    database.upsert_account_snapshot({"sub2api_account_id": 8, "email": "eight@example.com", "status": "active"})
+    assert {row["sub2api_account_id"] for row in database.list_accounts()} == {7, 8}

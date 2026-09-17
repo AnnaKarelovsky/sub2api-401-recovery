@@ -1,5 +1,8 @@
 const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null };
 const $ = (selector) => document.querySelector(selector);
+const DASHBOARD_REFRESH_MS = 10000;
+let dashboardRefreshTimer = null;
+let dashboardLoadInFlight = null;
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -16,12 +19,32 @@ async function api(path, options = {}) {
 function setLoggedIn(value) {
   $("#login-view").classList.toggle("hidden", value);
   $("#app-view").classList.toggle("hidden", !value);
+  if (value) startDashboardRefresh();
+  else stopDashboardRefresh();
 }
 
 function logout() {
   state.token = "";
   localStorage.removeItem("recovery_token");
   setLoggedIn(false);
+}
+
+function startDashboardRefresh() {
+  if (dashboardRefreshTimer) return;
+  dashboardRefreshTimer = window.setInterval(async () => {
+    if (!state.token || document.hidden) return;
+    try {
+      await loadAll();
+    } catch (_) {
+      $("#service-status").textContent = "连接失败";
+    }
+  }, DASHBOARD_REFRESH_MS);
+}
+
+function stopDashboardRefresh() {
+  if (!dashboardRefreshTimer) return;
+  window.clearInterval(dashboardRefreshTimer);
+  dashboardRefreshTimer = null;
 }
 
 function stateBadge(value) {
@@ -107,13 +130,21 @@ function collectSettings() {
 }
 
 async function loadAll() {
-  const [dashboard, accounts, tasks] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80")]);
-  state.accounts = accounts.items || [];
-  state.tasks = tasks.items || [];
-  renderMetrics(dashboard.summary || {});
-  renderAccounts();
-  renderTasks();
-  $("#service-status").textContent = "已连接";
+  if (dashboardLoadInFlight) return dashboardLoadInFlight;
+  dashboardLoadInFlight = (async () => {
+    const [dashboard, accounts, tasks] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80")]);
+    state.accounts = accounts.items || [];
+    state.tasks = tasks.items || [];
+    renderMetrics(dashboard.summary || {});
+    renderAccounts();
+    renderTasks();
+    $("#service-status").textContent = "已连接";
+  })();
+  try {
+    return await dashboardLoadInFlight;
+  } finally {
+    dashboardLoadInFlight = null;
+  }
 }
 
 function renderMetrics(summary) {
@@ -265,5 +296,8 @@ $("#accounts-body").addEventListener("click", (event) => { const button = event.
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#complete-auth").addEventListener("click", completeReauth);
 $("#launch-browser").addEventListener("click", async () => { if (!state.reauthSession) return; try { await api(`/api/v1/accounts/${state.reauthSession.sub2api_account_id}/reauthorize`, { method: "POST", body: JSON.stringify({ launch_browser: true, session_id: state.reauthSession.id }) }); $("#reauth-status").textContent = "浏览器已启动，请完成验证。"; } catch (error) { $("#reauth-status").textContent = error.message; } });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.token) loadAll().catch(() => { $("#service-status").textContent = "连接失败"; });
+});
 
 if (state.token) { setLoggedIn(true); loadAll().catch(() => logout()); } else { setLoggedIn(false); }
