@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY constraints.txt ./
 COPY app ./app
 
 # Keep build-time package and browser downloads on the same egress path as runtime traffic.
@@ -15,7 +16,7 @@ ARG HTTPS_PROXY
 ARG ALL_PROXY
 ARG NO_PROXY
 
-RUN pip install --upgrade pip && pip install ".[browser]" \
+RUN pip install --upgrade pip && pip install -c constraints.txt ".[browser]" \
     && python -m playwright install --with-deps chromium
 
 RUN mkdir -p /data /backups

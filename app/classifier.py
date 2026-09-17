@@ -14,6 +14,7 @@ class FailureClass(StrEnum):
     RATE_LIMIT = "429_RATE_LIMIT"
     PERMISSION = "403_PERMISSION"
     NETWORK = "NETWORK_ERROR"
+    ACCOUNT_ERROR = "ACCOUNT_ERROR"
     UNKNOWN = "UNKNOWN"
 
 
@@ -44,6 +45,13 @@ NETWORK_MARKERS = (
     "transport",
     "tls",
     "no route to host",
+)
+ACCOUNT_ERROR_MARKERS = (
+    "deactivated_workspace",
+    "workspace_deactivated",
+    "account_deactivated",
+    "account_disabled",
+    "account_deleted",
 )
 
 
@@ -96,6 +104,16 @@ def classify_failure(
         )
     if http_status == 429 or _has_http_status(combined, 429) or "rate limit" in combined:
         return Classification(FailureClass.RATE_LIMIT, _compact_reason(message), False)
+    if any(marker in combined for marker in ACCOUNT_ERROR_MARKERS):
+        if "deactivated_workspace" in combined or "workspace_deactivated" in combined:
+            reason = "Sub2API workspace is deactivated"
+        elif "account_deleted" in combined:
+            reason = "Sub2API account is deleted"
+        elif "account_disabled" in combined or "account_deactivated" in combined:
+            reason = "Sub2API account is disabled"
+        else:
+            reason = _compact_reason(message) or "Sub2API account is unavailable"
+        return Classification(FailureClass.ACCOUNT_ERROR, reason, False)
     if http_status == 403 or _has_http_status(combined, 403) or any(
         marker in combined for marker in ("forbidden", "permission denied", "not allowed")
     ):
