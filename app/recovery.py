@@ -574,6 +574,7 @@ class RecoveryCoordinator:
                         str(session["auth_url"]),
                         material,
                         started_at=datetime.now(timezone.utc),
+                        on_stage=lambda stage, message: self._log(task_id, stage, message),
                     )
                     self.complete_authorization(session_id=str(session["id"]), callback_url=callback_url)
                     self._log(task_id, "automatic_reauthorization", "Automated OAuth callback completed")
@@ -608,7 +609,7 @@ class RecoveryCoordinator:
                     failure_class=classification.category.value,
                     failure_reason=f"Automatic reauthorization exhausted its retries: {message}",
                 )
-                self._log(task_id, "automatic_reauthorization", message, exc)
+                self._log(task_id, getattr(exc, "stage", "automatic_reauthorization"), message, exc)
                 return
             except RecoveryFailure:
                 raise
@@ -748,6 +749,7 @@ class RecoveryCoordinator:
         session = self.db.get_oauth_session(session_id) if session_id else self.db.get_oauth_session_by_state(state)
         if not session or session.get("status") != "pending":
             raise RecoveryFailure("OAuth session was not found or is no longer pending")
+        task_id = str(session.get("task_id") or "")
         if _expired(session.get("expires_at")):
             raise RecoveryFailure("OAuth session has expired; create a new authorization URL")
         if not state or not hmac_compare(state, str(session["state"])):
@@ -755,7 +757,6 @@ class RecoveryCoordinator:
         if callback_error:
             reason = safe_error(f"OAuth authorization was denied: {callback_error}")
             self.db.complete_oauth_session(str(session["id"]), status="failed", error_reason=reason)
-            task_id = str(session.get("task_id") or "")
             if task_id:
                 self.db.finish_task(
                     task_id,
@@ -774,6 +775,8 @@ class RecoveryCoordinator:
         if not verifier:
             raise RecoveryFailure("OAuth PKCE verifier is unavailable")
         try:
+            if task_id:
+                self._log(task_id, "callback", "OAuth callback received; exchanging the authorization code")
             token_set = self.oauth.exchange_code(
                 code=code,
                 code_verifier=verifier,
@@ -801,8 +804,8 @@ class RecoveryCoordinator:
         self.db.complete_oauth_session(
             str(session["id"]), status="completed", token_payload=token_set.as_credentials()
         )
-        task_id = str(session.get("task_id") or "")
         if task_id:
+            self._log(task_id, "token_exchange", "OAuth session received and encrypted credentials stored")
             self.db.finish_task(task_id, status="queued", stage="apply_credentials", error_reason=None)
             self._log(task_id, "reauthorization", "OAuth authorization completed; queued credential application")
         else:

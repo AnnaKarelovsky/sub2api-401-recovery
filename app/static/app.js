@@ -1,12 +1,43 @@
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" } };
+const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
+document.documentElement.dataset.theme = savedTheme;
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "skipped"]);
+const RECOVERY_FLOW = [
+  { key: "detect", label: "确认认证异常", stages: ["scan", "probe"], description: "读取 Sub2API 返回的账号状态，确认是否需要恢复。" },
+  { key: "credentials", label: "读取账号材料", stages: ["sync"], description: "读取备注和加密凭据，敏感值不会显示在页面。" },
+  { key: "native_refresh", label: "尝试原生刷新", stages: ["native_refresh"], description: "优先调用 Sub2API 原生 OAuth 刷新。" },
+  { key: "refresh_token", label: "刷新 OAuth 令牌", stages: ["refresh_token"], description: "原生刷新未完成时，使用本地刷新令牌继续恢复。" },
+  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
+  { key: "callback", label: "接收回调并建立会话", stages: ["callback", "token_exchange", "reauthorization"], description: "校验 OAuth 回调和 PKCE 后交换会话令牌。" },
+  { key: "apply", label: "写回原账号凭据", stages: ["apply_credentials"], description: "将新 OAuth 凭据写回原 Sub2API 账号 ID。" },
+  { key: "verify", label: "恢复并验证状态", stages: ["status_check", "recover_state", "succeeded"], description: "清理错误状态，恢复可调度性并再次检查账号。" },
+];
 let dashboardRefreshTimer = null;
 let dashboardLoadInFlight = null;
 let taskDialogRefreshTimer = null;
+let selectedTaskRefreshTimer = null;
+let selectedTaskRequest = 0;
 let activeTaskId = "";
+
+function renderThemeControl(theme) {
+  const dark = theme === "dark";
+  const toggle = $("#theme-toggle");
+  toggle.setAttribute("aria-pressed", String(dark));
+  toggle.setAttribute("aria-label", dark ? "切换日间模式" : "切换夜间模式");
+  toggle.title = dark ? "切换日间模式" : "切换夜间模式";
+  $("#theme-icon").textContent = dark ? "☀" : "☾";
+  $("#theme-label").textContent = dark ? "日间" : "夜间";
+}
+
+function setTheme(theme) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  localStorage.setItem("recovery_theme", nextTheme);
+  renderThemeControl(nextTheme);
+}
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -31,6 +62,7 @@ function logout() {
   state.token = "";
   localStorage.removeItem("recovery_token");
   stopTaskDialogRefresh();
+  stopSelectedTaskRefresh();
   setLoggedIn(false);
 }
 
@@ -57,6 +89,10 @@ function stateBadge(value) {
   return `<span class="state ${escapeHtml(value || "unknown")}">${escapeHtml(text)}</span>`;
 }
 
+function accountStatusLabel(value) {
+  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "备注不完整", account_error: "账号异常", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 }
@@ -74,6 +110,16 @@ const STAGE_LABELS = {
   native_refresh: "原生刷新",
   refresh_token: "令牌刷新",
   automatic_reauthorization: "自动重新授权",
+  browser: "启动浏览器",
+  security_challenge: "安全挑战",
+  cloudflare_challenge: "安全挑战",
+  email: "提交账号邮箱",
+  openai_password: "提交 OpenAI 密码",
+  email_code: "获取邮箱验证码",
+  totp: "提交验证器代码",
+  oauth_flow: "OAuth 页面交互",
+  callback: "接收 OAuth 回调",
+  token_exchange: "交换 OAuth 会话",
   reauthorization: "重新授权",
   apply_credentials: "写回凭据",
   status_check: "恢复后验证",
@@ -158,6 +204,20 @@ function humanizeLogMessage(log) {
     "Clearing Sub2API error state and restoring schedulability": "正在清理错误状态并恢复账号可用性。",
     "Automated OAuth callback completed": "自动授权回调已完成。",
     "Starting automated OAuth browser recovery": "正在启动浏览器自动授权。",
+    "Opening the OpenAI authorization page": "正在打开 OpenAI 授权页面。",
+    "OpenAI authorization page loaded": "OpenAI 授权页面已打开。",
+    "Submitting the account email": "正在提交账号邮箱。",
+    "Submitting the OpenAI account password": "正在提交 OpenAI 账号密码。",
+    "Waiting for the email verification code": "正在等待邮箱验证码。",
+    "Reading the verification code from the mailbox": "正在读取邮箱验证码。",
+    "IMAP did not return a code; trying Outlook webmail": "IMAP 未返回验证码，正在尝试网页邮箱。",
+    "Email verification code received and submitted": "已取得邮箱验证码并提交。",
+    "Generating and submitting the authenticator code": "正在生成并提交验证器代码。",
+    "Submitting the OAuth consent or continue step": "正在提交 OAuth 同意或继续步骤。",
+    "Waiting for the OAuth callback": "正在等待 OAuth 回调。",
+    "OAuth callback received": "已收到 OAuth 回调。",
+    "OAuth callback received; exchanging the authorization code": "已收到 OAuth 回调，正在交换授权码。",
+    "OAuth session received and encrypted credentials stored": "已建立 OAuth 会话并加密保存凭据。",
     "OAuth authorization completed; queued credential application": "OAuth 授权已完成，凭据写回任务已排队。",
     "Account note does not contain complete automation credentials": "账号备注缺少自动登录所需信息，自动恢复已暂停。",
     "Refresh token is not usable; administrator action is required": "刷新令牌不可用，需要重新授权。",
@@ -179,6 +239,15 @@ function humanizeLogMessage(log) {
       recover_state: "账号状态恢复未完成。",
       automatic_reauthorization: "自动重新授权未完成。",
       reauthorization: "重新授权未完成。",
+      browser: "浏览器自动化未完成。",
+      email: "账号邮箱未通过。",
+      openai_password: "OpenAI 密码未通过。",
+      email_code: "邮箱验证码未获取。",
+      totp: "验证器代码未通过。",
+      security_challenge: "安全验证未完成。",
+      cloudflare_challenge: "安全验证未完成。",
+      callback: "OAuth 回调未收到。",
+      token_exchange: "OAuth 会话交换未完成。",
     };
     return summaries[log.stage] || "该步骤未完成，请查看技术详情。";
   }
@@ -216,6 +285,7 @@ function renderSync(sync) {
   if (state.sync.status === "failed" && state.sync.reason) label += ` · ${state.sync.reason}`;
   $("#sync-status").textContent = label;
   $("#last-updated").textContent = state.lastUpdatedAt ? `页面更新 ${formatDate(state.lastUpdatedAt)}` : "页面更新时间 -";
+  $("#sidebar-sync").textContent = label;
 }
 
 function renderSettings(data) {
@@ -291,11 +361,14 @@ async function loadAll() {
     const [dashboard, accounts, tasks] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80")]);
     state.accounts = accounts.items || [];
     state.tasks = tasks.items || [];
+    ensureSelectedAccount();
     renderMetrics(dashboard.summary || {});
     state.lastUpdatedAt = new Date().toISOString();
     renderSync(dashboard.sync || {});
+    renderConsole();
     renderAccounts();
     renderTasks();
+    await loadSelectedTask();
     $("#service-status").textContent = "已连接";
   })();
   try {
@@ -308,6 +381,198 @@ async function loadAll() {
 function renderMetrics(summary) {
   const items = [["账号总数", summary.accounts || 0], ["401 / 待授权", summary.auth_failures || 0], ["恢复中", summary.recovering || 0], ["近 30 天成功", summary.success || 0], ["失败任务", summary.failed || 0]];
   $("#metrics").innerHTML = items.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+}
+
+function accountName(account) {
+  return account.email || account.username || "未命名账号";
+}
+
+function accountPriority(account) {
+  const priority = { account_error: 0, auth_failed: 1, reauth_required: 2, recovering: 3, automation_blocked: 4, observed: 5, healthy: 6, unknown: 99 };
+  return priority[account.status] ?? 99;
+}
+
+function ensureSelectedAccount() {
+  if (state.accounts.some((account) => String(account.sub2api_account_id) === String(state.selectedAccountId))) return;
+  const candidates = [...state.accounts].sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
+  state.selectedAccountId = candidates.length ? String(candidates[0].sub2api_account_id) : "";
+}
+
+function latestTaskForAccount(accountId) {
+  return state.tasks
+    .filter((task) => String(task.sub2api_account_id) === String(accountId))
+    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0] || null;
+}
+
+function renderConsoleAccounts() {
+  const search = $("#console-account-search").value.trim().toLowerCase();
+  const filter = $("#console-account-filter").value;
+  const items = state.accounts
+    .filter((account) => {
+      if (filter && account.status !== filter) return false;
+      if (!search) return true;
+      return [account.email, account.username, account.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
+    })
+    .sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
+  $("#console-account-count").textContent = `${items.length}/${state.accounts.length}`;
+  $("#console-accounts-empty").classList.toggle("hidden", items.length > 0);
+  $("#console-account-list").innerHTML = items.map((account) => {
+    const accountId = String(account.sub2api_account_id);
+    const selected = accountId === String(state.selectedAccountId);
+    const task = latestTaskForAccount(accountId);
+    const secondary = account.failure_reason || account.plan_type || "OpenAI OAuth";
+    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}${stateBadge(account.status)}</span></button>`;
+  }).join("");
+}
+
+function timelineStageIndex(task) {
+  if (!task) return -1;
+  const direct = RECOVERY_FLOW.findIndex((step) => step.stages.includes(task.stage));
+  if (direct >= 0) return direct;
+  if (task.stage === "reauthorization") return RECOVERY_FLOW.findIndex((step) => step.key === "browser");
+  const logs = task.logs || [];
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const logIndex = RECOVERY_FLOW.findIndex((step) => step.stages.includes(logs[index].stage));
+    if (logIndex >= 0) return logIndex;
+  }
+  return ["queued", "running", "retry_wait"].includes(task.status) ? 0 : -1;
+}
+
+function timelineStepStatus(step, index, task) {
+  if (!task) return "pending";
+  const relevantLogs = (task.logs || []).filter((log) => step.stages.includes(log.stage));
+  const error = relevantLogs.some((log) => String(log.level || "").toUpperCase() === "ERROR");
+  if (error) return "error";
+  const currentIndex = timelineStageIndex(task);
+  if (currentIndex === index) {
+    if (task.status === "succeeded") return "done";
+    if (task.status === "failed") return "error";
+    if (task.status === "skipped") return "skipped";
+    return "running";
+  }
+  if (currentIndex > index) return relevantLogs.length ? "done" : "skipped";
+  if (task.status === "succeeded") return relevantLogs.length ? "done" : "skipped";
+  return "pending";
+}
+
+function timelineStepDescription(step, status, task) {
+  const logs = (task?.logs || []).filter((log) => step.stages.includes(log.stage));
+  const latest = logs[logs.length - 1];
+  if (latest) return humanizeLogMessage(latest);
+  if (status === "skipped") return "该路径未执行，前置步骤已决定使用其他恢复方式。";
+  if (status === "error") return taskErrorSummary(task);
+  if (status === "running" && task?.status === "manual_required") return "等待管理员完成授权。";
+  return step.description;
+}
+
+function renderRecoveryTimeline(task) {
+  const markers = { done: "✓", running: "…", pending: "", skipped: "–", error: "!" };
+  $("#recovery-timeline").innerHTML = RECOVERY_FLOW.map((step, index) => {
+    const status = timelineStepStatus(step, index, task);
+    const statusLabelText = { done: "已完成", running: task?.status === "manual_required" && index === timelineStageIndex(task) ? "等待授权" : "处理中", pending: "待执行", skipped: "未需要", error: "出错" }[status];
+    return `<li class="timeline-step ${status}"><span class="timeline-marker" aria-hidden="true">${markers[status]}</span><div class="timeline-copy"><div class="timeline-title"><strong>${escapeHtml(step.label)}</strong><span>${statusLabelText}</span></div><p>${escapeHtml(timelineStepDescription(step, status, task))}</p></div></li>`;
+  }).join("");
+}
+
+function renderRecoveryLogPreview(task) {
+  const logs = (task?.logs || []).slice(-5).reverse();
+  if (!logs.length) {
+    $("#recovery-log-preview").innerHTML = `<div class="preview-empty">${task ? "任务已建立，等待第一条处理记录。" : "该账号还没有恢复记录。"}</div>`;
+    return;
+  }
+  $("#recovery-log-preview").innerHTML = logs.map((log) => `<article class="preview-log ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderTechnicalDetails(log)}</article>`).join("");
+}
+
+function renderRecoveryInspector() {
+  const account = state.accounts.find((item) => String(item.sub2api_account_id) === String(state.selectedAccountId));
+  const inspector = $("#recovery-inspector");
+  const empty = $("#recovery-empty");
+  if (!account) {
+    inspector.classList.add("hidden");
+    empty.classList.remove("hidden");
+    $("#open-selected-logs").disabled = true;
+    return;
+  }
+  inspector.classList.remove("hidden");
+  empty.classList.add("hidden");
+  const task = state.selectedTask && String(state.selectedTask.sub2api_account_id) === String(account.sub2api_account_id) ? state.selectedTask : latestTaskForAccount(account.sub2api_account_id);
+  $("#recovery-account-name").textContent = accountName(account);
+  $("#recovery-account-meta").textContent = `Sub2API ID ${account.sub2api_account_id} · ${account.plan_type || "OpenAI OAuth"}`;
+  $("#recovery-account-state").innerHTML = stateBadge(account.status);
+  $("#recovery-actions").innerHTML = `${actionButton("recover", account.sub2api_account_id, "开始恢复")}${actionButton("test", account.sub2api_account_id, "检查状态")}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
+  $("#recovery-status-text").textContent = task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务";
+  $("#recovery-live-text").textContent = task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : "");
+  $("#open-selected-logs").disabled = !task;
+  renderRecoveryTimeline(task);
+  renderRecoveryLogPreview(task);
+}
+
+function showView(view) {
+  const views = { console: "#view-console", accounts: "#view-accounts", logs: "#view-logs", settings: "#settings-section" };
+  const target = views[view] ? view : "console";
+  state.activeView = target;
+  localStorage.setItem("recovery_view", target);
+  Object.entries(views).forEach(([name, selector]) => $(selector).classList.toggle("hidden", name !== target));
+  document.querySelectorAll("[data-view-target]").forEach((button) => button.classList.toggle("active", button.dataset.viewTarget === target));
+  if (target === "console") renderConsole();
+  if (target === "accounts") renderAccounts();
+  if (target === "logs") renderTasks();
+}
+
+function renderConsole() {
+  renderConsoleAccounts();
+  renderRecoveryInspector();
+}
+
+function stopSelectedTaskRefresh() {
+  if (!selectedTaskRefreshTimer) return;
+  window.clearInterval(selectedTaskRefreshTimer);
+  selectedTaskRefreshTimer = null;
+}
+
+function startSelectedTaskRefresh(task) {
+  stopSelectedTaskRefresh();
+  if (!task || TERMINAL_TASK_STATUSES.has(task.status)) return;
+  selectedTaskRefreshTimer = window.setInterval(async () => {
+    if (document.hidden || !state.token || !state.selectedAccountId) return;
+    const summary = latestTaskForAccount(state.selectedAccountId);
+    if (!summary) return;
+    try {
+      const latest = await api(`/api/v1/tasks/${summary.id}`);
+      if (String(latest.sub2api_account_id) !== String(state.selectedAccountId)) return;
+      state.selectedTask = latest;
+      renderConsole();
+      if (TERMINAL_TASK_STATUSES.has(latest.status)) stopSelectedTaskRefresh();
+    } catch (_) {
+      $("#recovery-live-text").textContent = "详情暂时无法更新";
+    }
+  }, TASK_DETAIL_REFRESH_MS);
+}
+
+async function loadSelectedTask() {
+  const requestId = ++selectedTaskRequest;
+  stopSelectedTaskRefresh();
+  const accountId = state.selectedAccountId;
+  const summary = latestTaskForAccount(accountId);
+  state.selectedTask = null;
+  renderRecoveryInspector();
+  if (!summary) return;
+  try {
+    const task = await api(`/api/v1/tasks/${summary.id}`);
+    if (requestId !== selectedTaskRequest || String(state.selectedAccountId) !== String(accountId)) return;
+    state.selectedTask = task;
+    renderRecoveryInspector();
+    startSelectedTaskRefresh(task);
+  } catch (_) {
+    if (requestId === selectedTaskRequest) $("#recovery-live-text").textContent = "恢复详情暂时无法加载";
+  }
+}
+
+function selectAccount(accountId) {
+  if (!state.accounts.some((account) => String(account.sub2api_account_id) === String(accountId))) return;
+  state.selectedAccountId = String(accountId);
+  renderConsole();
+  loadSelectedTask();
 }
 
 function renderAccounts() {
@@ -370,6 +635,11 @@ async function handleAction(action, id) {
   const key = `${action}:${id}`;
   if (state.busyActions.has(key)) return;
   state.busyActions.add(key);
+  if (["recover", "test", "reauth"].includes(action)) {
+    state.selectedAccountId = String(id);
+    state.selectedTask = null;
+  }
+  renderConsole();
   renderAccounts();
   renderTasks();
   try {
@@ -379,7 +649,7 @@ async function handleAction(action, id) {
     if (action === "detail") await openTask(id);
     if (action === "retry-task") { await api(`/api/v1/tasks/${id}/retry`, { method: "POST" }); await loadAll(); }
   } catch (error) { alert(error.message); }
-  finally { state.busyActions.delete(key); renderAccounts(); renderTasks(); }
+  finally { state.busyActions.delete(key); renderConsole(); renderAccounts(); renderTasks(); }
 }
 
 async function openReauth(accountId) {
@@ -461,6 +731,14 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 
 $("#logout-button").addEventListener("click", logout);
+$("#theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+document.querySelectorAll("[data-view-target]").forEach((button) => button.addEventListener("click", async () => {
+  const view = button.dataset.viewTarget;
+  showView(view);
+  if (view === "settings") {
+    try { await loadSettings(); } catch (error) { alert(error.message); }
+  }
+}));
 $("#refresh-button").addEventListener("click", async () => {
   const button = $("#refresh-button");
   button.disabled = true;
@@ -469,10 +747,10 @@ $("#refresh-button").addEventListener("click", async () => {
   finally { button.disabled = false; button.textContent = "刷新"; }
 });
 $("#settings-button").addEventListener("click", async () => {
-  $("#settings-section").classList.remove("hidden");
-  try { await loadSettings(); $("#settings-section").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (error) { alert(error.message); }
+  showView("settings");
+  try { await loadSettings(); } catch (error) { alert(error.message); }
 });
-$("#close-settings").addEventListener("click", () => $("#settings-section").classList.add("hidden"));
+$("#close-settings").addEventListener("click", () => showView("console"));
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#settings-status").textContent = "保存中...";
@@ -547,6 +825,22 @@ $("#scan-button").addEventListener("click", async () => {
   } catch (error) { alert(error.message); }
   finally { button.disabled = false; button.textContent = "立即扫描"; }
 });
+$("#console-account-search").addEventListener("input", renderConsole);
+$("#console-account-filter").addEventListener("change", renderConsole);
+$("#console-account-list").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-select-account]");
+  if (button) selectAccount(button.dataset.selectAccount);
+});
+$("#recovery-actions").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (button) handleAction(button.dataset.action, button.dataset.id);
+});
+$("#open-selected-logs").addEventListener("click", async () => {
+  const task = state.selectedTask || latestTaskForAccount(state.selectedAccountId);
+  if (!task) return;
+  showView("logs");
+  await openTask(task.id);
+});
 $("#account-search").addEventListener("input", renderAccounts);
 $("#account-filter").addEventListener("change", renderAccounts);
 $("#accounts-head").addEventListener("click", (event) => {
@@ -572,4 +866,5 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-if (state.token) { setLoggedIn(true); loadAll().catch(() => logout()); } else { setLoggedIn(false); }
+renderThemeControl(savedTheme);
+if (state.token) { setLoggedIn(true); showView(state.activeView); loadAll().catch(() => logout()); } else { setLoggedIn(false); showView("console"); }
