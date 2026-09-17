@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sub2API 401 Recovery</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260917-profiles" />
+  </head>
+  <body>
+    <div id="login-view" class="login-shell">
+      <form id="login-form" class="login-panel">
+        <div class="brand-mark">S2</div>
+        <p class="eyebrow">COMPANION SERVICE</p>
+        <h1>401 Recovery</h1>
+        <p class="muted">Sub2API OAuth 账号恢复控制台</p>
+        <label>管理员账号<input id="login-username" autocomplete="username" required /></label>
+        <label>管理员密码<input id="login-password" type="password" autocomplete="current-password" required /></label>
+        <button class="button primary full" type="submit">登录控制台</button>
+        <p id="login-error" class="error-text"></p>
+      </form>
+    </div>
+
+    <div id="app-view" class="app-shell hidden">
+      <header class="topbar">
+        <div class="topbar-brand"><span class="brand-mark small">S2</span><span>401 Recovery</span></div>
+        <div class="topbar-actions"><span id="service-status" class="status-dot">连接中</span><button id="settings-button" class="button quiet" type="button">设置</button><button id="logout-button" class="button quiet" type="button">退出</button></div>
+      </header>
+      <main class="workspace">
+        <section class="page-heading">
+          <div><p class="eyebrow">SUB2API COMPANION</p><h2>恢复控制台</h2><p class="muted">监控 OAuth 认证状态，保留原账号 ID 完成恢复。</p></div>
+          <div class="heading-actions"><button id="scan-button" class="button primary">立即扫描</button><button id="refresh-button" class="button secondary">刷新</button></div>
+        </section>
+
+        <section id="metrics" class="metrics-grid"></section>
+
+        <section id="settings-section" class="content-section hidden">
+          <div class="section-heading"><div><h3>运行配置</h3><p class="muted">保存后 API 会立即加载，worker 会在下一轮轮询同步。敏感值只显示是否已配置。</p></div><button id="close-settings" class="button secondary" type="button">收起</button></div>
+          <div class="profiles-bar">
+            <div class="profiles-heading"><span class="profiles-title">配置存档</span><span class="muted">保存多套参数，按需快速切换</span></div>
+            <div class="profiles-controls"><select id="profile-select" aria-label="选择配置存档"><option value="">选择配置存档</option></select><button id="activate-profile" class="button secondary" type="button" disabled>切换</button><button id="save-profile" class="button secondary" type="button">保存当前配置</button><button id="delete-profile" class="button quiet danger" type="button" disabled>删除</button></div>
+            <span id="profile-status" class="muted"></span>
+          </div>
+          <form id="settings-form" class="settings-form">
+            <div id="settings-groups" class="settings-groups"></div>
+            <div class="settings-actions"><button id="save-settings" class="button primary" type="submit">保存配置</button><button id="reset-settings" class="button secondary" type="button">恢复 .env 默认</button><span id="settings-status" class="muted"></span></div>
+          </form>
+        </section>
+
+        <section class="content-section">
+          <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。</p></div><select id="account-filter"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="healthy">正常</option></select></div>
+          <div class="table-wrap"><table><thead><tr><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
+          <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
+        </section>
+
+        <section class="content-section">
+          <div class="section-heading"><div><h3>恢复任务</h3><p class="muted">按阶段查看 native refresh、token refresh、授权和验证结果。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>任务</th><th>账号</th><th>阶段</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
+          <div id="tasks-empty" class="empty hidden">暂无恢复任务。</div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="reauth-dialog">
+      <form method="dialog" class="dialog-panel" id="reauth-form">
+        <div class="dialog-heading"><div><p class="eyebrow">AUTOMATIC AUTHORIZATION</p><h3>重新授权</h3></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <p class="muted">服务会使用账号备注中的登录信息、邮箱验证码和 TOTP 自动完成真实 OAuth。此窗口用于查看授权会话和处理自动化无法完成的最终回调。</p>
+        <a id="auth-link" class="auth-link" target="_blank" rel="noreferrer">打开 OpenAI 授权页</a>
+        <label>回调 URL<input id="callback-url" placeholder="http://localhost:1455/auth/callback?code=...&state=..." /></label>
+        <div class="dialog-actions"><button id="launch-browser" class="button secondary" type="button">启动浏览器</button><button id="complete-auth" class="button primary" type="button">提交授权结果</button></div>
+        <p id="reauth-status" class="muted"></p>
+      </form>
+    </dialog>
+
+    <dialog id="task-dialog">
+      <form method="dialog" class="dialog-panel wide" id="task-form">
+        <div class="dialog-heading"><div><p class="eyebrow">RECOVERY LOG</p><h3 id="task-title">任务详情</h3></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <div id="task-meta" class="task-meta"></div>
+        <div id="task-logs" class="logs"></div>
+      </form>
+    </dialog>
+    <dialog id="profile-dialog">
+      <form method="dialog" class="dialog-panel compact" id="profile-form">
+        <div class="dialog-heading"><div><p class="eyebrow">CONFIG PROFILE</p><h3>保存配置存档</h3></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>存档名称<input id="profile-name" maxlength="60" placeholder="例如：家庭代理" required /></label>
+        <div class="dialog-actions"><button class="button secondary" value="cancel" type="button" id="cancel-profile">取消</button><button class="button primary" value="default" type="submit">保存</button></div>
+        <p id="profile-dialog-status" class="error-text"></p>
+      </form>
+    </dialog>
+    <script src="/static/app.js?v=20260917-profiles" defer></script>
+  </body>
+</html>
