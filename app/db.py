@@ -896,6 +896,55 @@ class Database:
             "manual_required": task_counts.get("manual_required", 0),
         }
 
+    def scan_status(self) -> dict[str, Any]:
+        """Return the latest durable account-sync state for the Dashboard."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT event_type, detail_json, created_at
+                FROM app_events
+                WHERE event_type IN (
+                    'scan_requested', 'scan_started', 'scan_completed',
+                    'scan_failed', 'scan_skipped'
+                )
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            return {"status": "never", "last_event_at": None}
+
+        detail: dict[str, Any] = {}
+        if row["detail_json"]:
+            try:
+                parsed = json.loads(row["detail_json"])
+                if isinstance(parsed, dict):
+                    detail = parsed
+            except json.JSONDecodeError:
+                pass
+        event_type = str(row["event_type"])
+        status = {
+            "scan_requested": "queued",
+            "scan_started": "running",
+            "scan_completed": "success",
+            "scan_failed": "failed",
+            "scan_skipped": "busy",
+        }.get(event_type, "unknown")
+        result: dict[str, Any] = {
+            "status": status,
+            "last_event_at": row["created_at"],
+        }
+        if event_type in {"scan_completed", "scan_failed", "scan_skipped"}:
+            result["finished_at"] = row["created_at"]
+        for key in ("found", "auth_failures", "queued", "removed"):
+            if key in detail:
+                try:
+                    result[key] = int(detail[key])
+                except (TypeError, ValueError):
+                    continue
+        if event_type == "scan_failed" and detail.get("reason"):
+            result["reason"] = str(detail["reason"])
+        return result
+
     def record_event(self, event_type: str, message: str, detail: dict[str, Any] | None = None) -> None:
         with self.connect() as conn:
             conn.execute(

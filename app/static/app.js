@@ -1,4 +1,4 @@
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set() };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 let dashboardRefreshTimer = null;
@@ -60,6 +60,19 @@ function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function renderSync(sync) {
+  state.sync = sync || { status: "never" };
+  const labels = { never: "等待首次同步", queued: "扫描已排队", running: "正在同步账号", success: "同步正常", failed: "同步失败", busy: "已有扫描进行中" };
+  let label = labels[state.sync.status] || "同步状态未知";
+  if (state.sync.status === "success" && Number.isFinite(state.sync.found)) {
+    label = `同步正常 · ${state.sync.found} 个账号`;
+    if (state.sync.removed) label += ` · 隐藏 ${state.sync.removed} 个已删除账号`;
+  }
+  if (state.sync.status === "failed" && state.sync.reason) label += ` · ${state.sync.reason}`;
+  $("#sync-status").textContent = label;
+  $("#last-updated").textContent = state.lastUpdatedAt ? `页面更新 ${formatDate(state.lastUpdatedAt)}` : "页面更新时间 -";
 }
 
 function renderSettings(data) {
@@ -136,6 +149,8 @@ async function loadAll() {
     state.accounts = accounts.items || [];
     state.tasks = tasks.items || [];
     renderMetrics(dashboard.summary || {});
+    state.lastUpdatedAt = new Date().toISOString();
+    renderSync(dashboard.sync || {});
     renderAccounts();
     renderTasks();
     $("#service-status").textContent = "已连接";
@@ -154,27 +169,47 @@ function renderMetrics(summary) {
 
 function renderAccounts() {
   const filter = $("#account-filter").value;
-  const items = filter ? state.accounts.filter((item) => item.status === filter) : state.accounts;
+  const search = $("#account-search").value.trim().toLowerCase();
+  const items = state.accounts.filter((item) => {
+    if (filter && item.status !== filter) return false;
+    if (!search) return true;
+    return [item.email, item.username, item.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
+  });
   $("#accounts-empty").classList.toggle("hidden", items.length > 0);
+  $("#accounts-empty").textContent = state.accounts.length && !items.length ? "没有匹配账号。" : "还没有同步到 OpenAI OAuth 账号。";
   $("#accounts-body").innerHTML = items.map((account) => `<tr>
     <td><div class="account-name">${escapeHtml(account.email || account.username || "未命名账号")}</div><div class="account-sub">${escapeHtml(account.failure_reason || account.plan_type || "OpenAI OAuth")}</div></td>
     <td><code>${escapeHtml(account.sub2api_account_id)}</code></td>
     <td>${stateBadge(account.status)}</td>
     <td><span class="account-sub">${account.has_access_token ? "AT" : "-"} / ${account.has_refresh_token ? "RT" : "-"}</span></td>
     <td>${escapeHtml(formatDate(account.last_401_at))}</td>
-    <td><div class="row-actions"><button class="mini-button" data-action="recover" data-id="${account.sub2api_account_id}">恢复</button><button class="mini-button" data-action="reauth" data-id="${account.sub2api_account_id}">重新授权</button><button class="mini-button" data-action="test" data-id="${account.sub2api_account_id}">检查状态</button></div></td>
+    <td><div class="row-actions">${actionButton("recover", account.sub2api_account_id, "恢复")}${actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}</div></td>
   </tr>`).join("");
 }
 
 function renderTasks() {
-  $("#tasks-empty").classList.toggle("hidden", state.tasks.length > 0);
-  $("#tasks-body").innerHTML = state.tasks.map((task) => `<tr>
+  const search = $("#task-search").value.trim().toLowerCase();
+  const items = state.tasks.filter((task) => !search || [task.id, task.email, task.username, task.sub2api_account_id, task.status, task.stage].some((value) => String(value ?? "").toLowerCase().includes(search)));
+  $("#tasks-empty").classList.toggle("hidden", items.length > 0);
+  $("#tasks-empty").textContent = state.tasks.length && !items.length ? "没有匹配任务。" : "暂无恢复任务。";
+  $("#tasks-body").innerHTML = items.map((task) => `<tr>
     <td><code>${escapeHtml(task.id.slice(0, 8))}</code></td><td>${escapeHtml(task.email || task.username || task.sub2api_account_id)}</td><td>${escapeHtml(task.stage)}</td><td>${stateBadge(task.status)}</td><td>${escapeHtml(formatDate(task.created_at))}</td>
-    <td><div class="row-actions"><button class="mini-button" data-action="detail" data-id="${escapeHtml(task.id)}">日志</button>${["failed", "manual_required"].includes(task.status) ? `<button class="mini-button" data-action="retry-task" data-id="${escapeHtml(task.id)}">重试</button>` : ""}</div></td>
+    <td><div class="row-actions">${actionButton("detail", task.id, "日志")}${["failed", "manual_required"].includes(task.status) ? actionButton("retry-task", task.id, "重试") : ""}</div></td>
   </tr>`).join("");
 }
 
+function actionButton(action, id, label) {
+  const key = `${action}:${id}`;
+  const busy = state.busyActions.has(key);
+  return `<button class="mini-button" data-action="${escapeHtml(action)}" data-id="${escapeHtml(id)}"${busy ? " disabled" : ""}>${busy ? "处理中..." : label}</button>`;
+}
+
 async function handleAction(action, id) {
+  const key = `${action}:${id}`;
+  if (state.busyActions.has(key)) return;
+  state.busyActions.add(key);
+  renderAccounts();
+  renderTasks();
   try {
     if (action === "recover") { await api(`/api/v1/accounts/${id}/recover`, { method: "POST" }); await loadAll(); }
     if (action === "test") { const result = await api(`/api/v1/accounts/${id}/status`, { method: "POST" }); alert(result.reason); await loadAll(); }
@@ -182,6 +217,7 @@ async function handleAction(action, id) {
     if (action === "detail") await openTask(id);
     if (action === "retry-task") { await api(`/api/v1/tasks/${id}/retry`, { method: "POST" }); await loadAll(); }
   } catch (error) { alert(error.message); }
+  finally { state.busyActions.delete(key); renderAccounts(); renderTasks(); }
 }
 
 async function openReauth(accountId) {
@@ -228,7 +264,13 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 
 $("#logout-button").addEventListener("click", logout);
-$("#refresh-button").addEventListener("click", () => loadAll().catch((error) => alert(error.message)));
+$("#refresh-button").addEventListener("click", async () => {
+  const button = $("#refresh-button");
+  button.disabled = true;
+  button.textContent = "更新中...";
+  try { await loadAll(); } catch (error) { alert(error.message); }
+  finally { button.disabled = false; button.textContent = "刷新"; }
+});
 $("#settings-button").addEventListener("click", async () => {
   $("#settings-section").classList.remove("hidden");
   try { await loadSettings(); $("#settings-section").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (error) { alert(error.message); }
@@ -290,8 +332,27 @@ $("#reset-settings").addEventListener("click", async () => {
     $("#settings-status").textContent = `已恢复，配置版本 ${result.revision}`;
   } catch (error) { $("#settings-status").textContent = error.message; }
 });
-$("#scan-button").addEventListener("click", async () => { try { await api("/api/v1/scan", { method: "POST" }); $("#service-status").textContent = "扫描已排队"; setTimeout(loadAll, 1000); } catch (error) { alert(error.message); } });
+$("#scan-button").addEventListener("click", async () => {
+  const button = $("#scan-button");
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "扫描中...";
+  try {
+    await api("/api/v1/scan", { method: "POST" });
+    $("#service-status").textContent = "扫描已排队";
+    await loadAll();
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline && ["queued", "running"].includes(state.sync.status)) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      await loadAll();
+    }
+    $("#service-status").textContent = state.sync.status === "failed" ? "扫描失败" : (state.sync.status === "success" ? "扫描完成" : (state.sync.status === "busy" ? "已有扫描进行中" : "扫描仍在后台运行"));
+  } catch (error) { alert(error.message); }
+  finally { button.disabled = false; button.textContent = "立即扫描"; }
+});
+$("#account-search").addEventListener("input", renderAccounts);
 $("#account-filter").addEventListener("change", renderAccounts);
+$("#task-search").addEventListener("input", renderTasks);
 $("#accounts-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#complete-auth").addEventListener("click", completeReauth);

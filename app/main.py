@@ -222,7 +222,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rt: AppRuntime = Depends(runtime),
         _: SessionToken = Depends(auth_required),
     ) -> dict[str, Any]:
-        return {"summary": rt.db.dashboard_summary(), "accounts": rt.coordinator.accounts_view()[:20]}
+        return {
+            "summary": rt.db.dashboard_summary(),
+            "accounts": rt.coordinator.accounts_view()[:20],
+            "sync": rt.db.scan_status(),
+        }
 
     @app.get("/api/v1/settings")
     def settings_view(
@@ -312,6 +316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rt: AppRuntime = Depends(runtime),
         _: SessionToken = Depends(auth_required),
     ) -> dict[str, Any]:
+        rt.db.record_event("scan_requested", "Manual account scan requested", {"source": "dashboard"})
         background.add_task(_safe_scan, rt.coordinator)
         return {"status": "queued"}
 
@@ -492,7 +497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def _safe_scan(coordinator: RecoveryCoordinator) -> None:
     try:
-        coordinator.scan()
+        coordinator.scan(source="dashboard")
     except Exception as exc:
         coordinator.db.record_event("api_scan_error", "Manual scan failed", {"reason": safe_error(exc)})
 
