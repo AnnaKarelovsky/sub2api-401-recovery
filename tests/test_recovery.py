@@ -145,6 +145,9 @@ def test_invalid_grant_creates_manual_authorization_session(database, settings):
     assert session["status"] == "pending"
     assert "old-refresh" not in str(database.list_logs(task_id))
     assert database.get_mapping(9)["status"] == "reauth_required"
+    error_log = next(log for log in database.list_logs(task_id) if log["level"] == "ERROR")
+    assert error_log["detail"]["error_code"] == "invalid_grant"
+    assert error_log["detail"]["reauthorization_required"] is True
 
 
 def test_completed_oauth_session_applies_credentials_before_status_check(database, settings):
