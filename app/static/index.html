@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260917-logs" />
+    <link rel="stylesheet" href="/static/style.css?v=20260917-task-groups" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -53,7 +53,7 @@
         </section>
 
         <section class="content-section">
-          <div class="section-heading"><div><h3>恢复任务</h3><p class="muted">按阶段查看 native refresh、token refresh、授权和验证结果。</p></div><div class="section-tools"><input id="task-search" type="search" placeholder="搜索任务、邮箱或 ID" aria-label="搜索恢复任务" /></div></div>
+          <div class="section-heading"><div><h3>恢复任务</h3><p class="muted">每个账号只显示最新任务，历史记录仍保留；日志中可查看具体处理过程。</p></div><div class="section-tools"><input id="task-search" type="search" placeholder="搜索任务、邮箱或 ID" aria-label="搜索恢复任务" /></div></div>
           <div class="table-wrap"><table><thead><tr><th>任务</th><th>账号</th><th>阶段</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
           <div id="tasks-empty" class="empty hidden">暂无恢复任务。</div>
         </section>
@@ -86,6 +86,6 @@
         <p id="profile-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20260917-logs" defer></script>
+    <script src="/static/app.js?v=20260917-task-groups" defer></script>
   </body>
 </html>
