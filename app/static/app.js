@@ -293,11 +293,22 @@ function renderAccounts() {
 
 function renderTasks() {
   const search = $("#task-search").value.trim().toLowerCase();
-  const items = state.tasks.filter((task) => !search || [task.id, task.email, task.username, task.sub2api_account_id, task.status, task.stage].some((value) => String(value ?? "").toLowerCase().includes(search)));
+  const grouped = new Map();
+  state.tasks.forEach((task) => {
+    const key = String(task.sub2api_account_id ?? task.email ?? task.username ?? task.id);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { task, count: 1 });
+      return;
+    }
+    existing.count += 1;
+    if (new Date(task.created_at).getTime() > new Date(existing.task.created_at).getTime()) existing.task = task;
+  });
+  const items = [...grouped.values()].filter(({ task }) => !search || [task.id, task.email, task.username, task.sub2api_account_id, task.status, task.stage, statusLabel(task.status), stageLabel(task.stage)].some((value) => String(value ?? "").toLowerCase().includes(search)));
   $("#tasks-empty").classList.toggle("hidden", items.length > 0);
   $("#tasks-empty").textContent = state.tasks.length && !items.length ? "没有匹配任务。" : "暂无恢复任务。";
-  $("#tasks-body").innerHTML = items.map((task) => `<tr>
-    <td><code>${escapeHtml(task.id.slice(0, 8))}</code></td><td>${escapeHtml(task.email || task.username || task.sub2api_account_id)}</td><td>${escapeHtml(task.stage)}</td><td>${stateBadge(task.status)}</td><td>${escapeHtml(formatDate(task.created_at))}</td>
+  $("#tasks-body").innerHTML = items.map(({ task, count }) => `<tr>
+    <td><code>${escapeHtml(task.id.slice(0, 8))}</code><div class="task-history">该账号 ${count} 次记录</div></td><td>${escapeHtml(task.email || task.username || task.sub2api_account_id)}</td><td>${escapeHtml(stageLabel(task.stage))}</td><td>${stateBadge(task.status)}</td><td>${escapeHtml(formatDate(task.created_at))}</td>
     <td><div class="row-actions">${actionButton("detail", task.id, "日志")}${["failed", "manual_required"].includes(task.status) ? actionButton("retry-task", task.id, "重试") : ""}</div></td>
   </tr>`).join("");
 }

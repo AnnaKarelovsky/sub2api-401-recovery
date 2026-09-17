@@ -65,6 +65,7 @@ td { border-top: 1px solid #edf1f2; padding: 14px 20px; vertical-align: middle; 
 tr:hover td { background: #fbfcfc; }
 .account-name { font-weight: 750; }
 .account-sub { color: var(--muted); font-size: 12px; }
+.task-history { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; }
 .state.healthy { background: #e6f4ed; color: var(--green); }
 .state.auth_failed, .state.failed { background: #fbeaea; color: var(--red); }
