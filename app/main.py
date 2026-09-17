@@ -354,7 +354,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         rt.db.update_account_state(
             account_id,
-            status="healthy" if result.success else ("auth_failed" if is_auth_failure else "observed"),
+            status=(
+                "healthy"
+                if result.success
+                else (
+                    "auth_failed"
+                    if is_auth_failure
+                    else (
+                        "account_error"
+                        if result.classification
+                        and result.classification.category.value == "ACCOUNT_ERROR"
+                        else "observed"
+                    )
+                )
+            ),
             failure_class=result.classification.category.value if result.classification else None,
             failure_reason=None if result.success else result.reason,
             mark_401=is_auth_failure,

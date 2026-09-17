@@ -25,6 +25,16 @@ def test_generic_error_status_does_not_become_auth_failure():
     assert result.category == FailureClass.UNKNOWN
 
 
+def test_deactivated_workspace_is_a_non_recoverable_account_error():
+    result = classify_account_snapshot(
+        {"id": 292, "status": "error", "error_message": '{"code":"deactivated_workspace"}'}
+    )
+    assert result is not None
+    assert result.category == FailureClass.ACCOUNT_ERROR
+    assert result.reason == "Sub2API workspace is deactivated"
+    assert not result.recoverable
+
+
 def test_expiry_accepts_rfc3339_string():
     result = classify_account_snapshot(
         {"id": 1, "status": "active", "credentials": {"expires_at": "2000-01-01T00:00:00Z"}}

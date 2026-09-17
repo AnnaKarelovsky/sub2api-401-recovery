@@ -42,6 +42,18 @@ class ScanSub2API(FakeSub2API):
         return self.accounts
 
 
+class ErrorScanSub2API(ScanSub2API):
+    def __init__(self):
+        super().__init__()
+        self.accounts = [
+            {
+                "id": 292,
+                "email": "workspace@example.com",
+                "status": "error",
+                "error_message": '{"code":"deactivated_workspace"}',
+            }
+        ]
+
 class FakeOAuth:
     def refresh_token(self, refresh_token, previous=None):
         return TokenSet(
@@ -72,6 +84,24 @@ def test_scan_reconciles_local_accounts_with_remote_accounts(database, settings)
     assert result["found"] == 1
     assert result["removed"] == 1
     assert [row["sub2api_account_id"] for row in database.list_accounts()] == [7]
+
+
+def test_scan_marks_deactivated_workspace_as_account_error(database, settings):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 292, "email": "workspace@example.com", "status": "healthy"}
+    )
+    settings.scan_probe_active_accounts = False
+    coordinator = RecoveryCoordinator(
+        RecoveryRuntime(database, ErrorScanSub2API(), FakeOAuth(), settings)
+    )
+
+    result = coordinator.scan()
+
+    assert result["found"] == 1
+    mapping = database.get_mapping(292)
+    assert mapping["status"] == "account_error"
+    assert mapping["failure_class"] == "ACCOUNT_ERROR"
+    assert mapping["failure_reason"] == "Sub2API workspace is deactivated"
 
 
 def test_automatic_security_failure_is_requeued_with_backoff(database, settings):

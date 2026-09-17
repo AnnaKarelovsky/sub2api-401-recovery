@@ -68,11 +68,12 @@ tr:hover td { background: #fbfcfc; }
 .task-history { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; }
 .state.healthy { background: #e6f4ed; color: var(--green); }
-.state.auth_failed, .state.failed { background: #fbeaea; color: var(--red); }
+.state.auth_failed, .state.account_error, .state.failed { background: #fbeaea; color: var(--red); }
 .state.recovering, .state.queued, .state.running { background: #fff1e7; color: var(--orange); }
 .state.reauth_required, .state.manual_required { background: #fff7d8; color: #8a6512; }
 .state.automation_blocked, .state.skipped { background: #edf1f3; color: #5e6b73; }
-.state.observed, .state.unknown { background: #edf1f3; color: #5e6b73; }
+.state.observed { background: #fff1e7; color: var(--orange); }
+.state.unknown { background: #edf1f3; color: #5e6b73; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .mini-button { background: white; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; padding: 5px 8px; }
 .mini-button:hover { border-color: var(--teal); color: var(--teal-dark); }

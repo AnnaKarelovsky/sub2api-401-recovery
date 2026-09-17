@@ -53,7 +53,7 @@ function stopDashboardRefresh() {
 }
 
 function stateBadge(value) {
-  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "备注不完整", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "已观察", unknown: "未知" }[value] || value || "未知";
+  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "备注不完整", account_error: "账号异常", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
   return `<span class="state ${escapeHtml(value || "unknown")}">${escapeHtml(text)}</span>`;
 }
 

@@ -131,14 +131,14 @@ class RecoveryCoordinator:
                             message="Detected an OAuth authentication failure and queued recovery",
                             detail={"classification": classification.category.value},
                         )
-                elif classification and classification.category in {
-                    FailureClass.RATE_LIMIT,
-                    FailureClass.PERMISSION,
-                    FailureClass.NETWORK,
-                }:
+                elif classification:
                     self.db.update_account_state(
                         int(account_id),
-                        status="observed",
+                        status=(
+                            "account_error"
+                            if classification.category == FailureClass.ACCOUNT_ERROR
+                            else "observed"
+                        ),
                         failure_class=classification.category.value,
                         failure_reason=classification.reason,
                     )
