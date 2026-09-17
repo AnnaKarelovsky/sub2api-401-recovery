@@ -58,9 +58,15 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .section-tools { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .section-tools input, .section-tools select { margin: 0; width: 190px; }
 .section-tools select { width: 160px; }
+#account-filter { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; background-repeat: no-repeat; background-size: 5px 5px, 5px 5px; padding-right: 32px; }
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; min-width: 780px; width: 100%; }
 th { background: #f7f9fa; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; padding: 10px 20px; text-align: left; text-transform: uppercase; }
+.table-sort { align-items: center; background: transparent; border: 0; color: inherit; display: inline-flex; font: inherit; gap: 6px; letter-spacing: inherit; padding: 0; text-align: left; text-transform: inherit; }
+.table-sort:hover, .table-sort:focus-visible { color: var(--teal-dark); }
+.table-sort:focus-visible { border-radius: 3px; outline: 2px solid rgba(13, 125, 121, .35); outline-offset: 3px; }
+.sort-indicator { color: var(--teal); font-size: 12px; line-height: 1; min-width: 10px; opacity: .5; }
+.table-sort[aria-pressed="true"] .sort-indicator { opacity: 1; }
 td { border-top: 1px solid #edf1f2; padding: 14px 20px; vertical-align: middle; }
 tr:hover td { background: #fbfcfc; }
 .account-name { font-weight: 750; }

@@ -1,4 +1,4 @@
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set() };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" } };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
@@ -85,6 +85,8 @@ const STAGE_LABELS = {
 };
 
 const STATUS_LABELS = { queued: "排队中", running: "执行中", manual_required: "等待授权", succeeded: "成功", failed: "失败", skipped: "已跳过", retry_wait: "等待重试" };
+const ACCOUNT_SORT_LABELS = { account: "账号", id: "Sub2API ID", status: "状态", credentials: "凭据", last_401: "最近 401" };
+const ACCOUNT_STATUS_ORDER = { account_error: 0, auth_failed: 1, reauth_required: 2, automation_blocked: 3, recovering: 4, observed: 5, healthy: 6, unknown: 99 };
 const LOG_LEVEL_LABELS = { INFO: "记录", ERROR: "错误", WARNING: "警告" };
 const TECHNICAL_LABELS = {
   status_code: "HTTP 状态码",
@@ -105,6 +107,43 @@ function stageLabel(value) {
 
 function statusLabel(value) {
   return STATUS_LABELS[value] || value || "未知";
+}
+
+function accountSortValue(account, key) {
+  if (key === "account") return String(account.email || account.username || "").trim().toLowerCase() || null;
+  if (key === "id") {
+    const value = Number(account.sub2api_account_id);
+    return Number.isFinite(value) ? value : null;
+  }
+  if (key === "status") return ACCOUNT_STATUS_ORDER[account.status] ?? 99;
+  if (key === "credentials") return (account.has_access_token ? 2 : 0) + (account.has_refresh_token ? 1 : 0);
+  if (key === "last_401") {
+    if (!account.last_401_at) return null;
+    const value = new Date(account.last_401_at).getTime();
+    return Number.isFinite(value) ? value : null;
+  }
+  return null;
+}
+
+function compareAccountValues(left, right, key, direction = "asc") {
+  const a = accountSortValue(left, key);
+  const b = accountSortValue(right, key);
+  const aMissing = a === null || a === "";
+  const bMissing = b === null || b === "";
+  if (aMissing || bMissing) {
+    if (aMissing && bMissing) return 0;
+    return aMissing ? 1 : -1;
+  }
+  const result = typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), "zh-CN");
+  return direction === "desc" ? -result : result;
+}
+
+function accountSortHeader(key, label) {
+  const active = state.accountSort.key === key;
+  const direction = active ? state.accountSort.direction : "asc";
+  const indicator = active ? (direction === "asc" ? "↑" : "↓") : "↕";
+  const sortLabel = active ? `${label}，当前${direction === "asc" ? "升序" : "降序"}` : `按${label}排序`;
+  return `<th aria-sort="${active ? (direction === "asc" ? "ascending" : "descending") : "none"}"><button class="table-sort" type="button" data-account-sort="${key}" aria-label="${sortLabel}" aria-pressed="${active}">${label}<span class="sort-indicator" aria-hidden="true">${indicator}</span></button></th>`;
 }
 
 function humanizeLogMessage(log) {
@@ -278,7 +317,15 @@ function renderAccounts() {
     if (filter && item.status !== filter) return false;
     if (!search) return true;
     return [item.email, item.username, item.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
-  });
+  }).sort((left, right) => compareAccountValues(left, right, state.accountSort.key, state.accountSort.direction) || compareAccountValues(left, right, "id"));
+  $("#accounts-head").innerHTML = [
+    accountSortHeader("account", ACCOUNT_SORT_LABELS.account),
+    accountSortHeader("id", ACCOUNT_SORT_LABELS.id),
+    accountSortHeader("status", ACCOUNT_SORT_LABELS.status),
+    accountSortHeader("credentials", ACCOUNT_SORT_LABELS.credentials),
+    accountSortHeader("last_401", ACCOUNT_SORT_LABELS.last_401),
+    "<th>操作</th>",
+  ].join("");
   $("#accounts-empty").classList.toggle("hidden", items.length > 0);
   $("#accounts-empty").textContent = state.accounts.length && !items.length ? "没有匹配账号。" : "还没有同步到 OpenAI OAuth 账号。";
   $("#accounts-body").innerHTML = items.map((account) => `<tr>
@@ -502,6 +549,14 @@ $("#scan-button").addEventListener("click", async () => {
 });
 $("#account-search").addEventListener("input", renderAccounts);
 $("#account-filter").addEventListener("change", renderAccounts);
+$("#accounts-head").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-account-sort]");
+  if (!button) return;
+  const key = button.dataset.accountSort;
+  if (state.accountSort.key === key) state.accountSort.direction = state.accountSort.direction === "asc" ? "desc" : "asc";
+  else state.accountSort = { key, direction: "asc" };
+  renderAccounts();
+});
 $("#task-search").addEventListener("input", renderTasks);
 $("#accounts-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
