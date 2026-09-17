@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260918-account-status" />
+    <link rel="stylesheet" href="/static/style.css?v=20260918-account-sort" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -48,7 +48,7 @@
 
         <section class="content-section">
           <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。</p></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="healthy">正常</option></select></div></div>
-          <div class="table-wrap"><table><thead><tr><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr id="accounts-head"><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
           <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
         </section>
 
@@ -86,6 +86,6 @@
         <p id="profile-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20260918-account-status" defer></script>
+    <script src="/static/app.js?v=20260918-account-sort" defer></script>
   </body>
 </html>
