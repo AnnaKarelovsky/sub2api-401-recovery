@@ -27,12 +27,14 @@ class RecoveryFailure(Exception):
         classification: Classification | None = None,
         retryable: bool = False,
         needs_reauthorization: bool = False,
+        technical_detail: dict[str, Any] | None = None,
     ):
         super().__init__(reason)
         self.reason = safe_error(reason)
         self.classification = classification or classify_failure(message=reason)
         self.retryable = retryable
         self.needs_reauthorization = needs_reauthorization
+        self.technical_detail = dict(technical_detail or {})
 
 
 @dataclass(frozen=True)
@@ -249,12 +251,17 @@ class RecoveryCoordinator:
         try:
             self._execute_locked(task_id, account_id, task)
         except RecoveryFailure as exc:
+            technical_detail = {
+                "classification": exc.classification.category.value,
+                "raw_reason": exc.reason,
+                **exc.technical_detail,
+            }
             self.db.append_log(
                 task_id,
                 level="ERROR",
                 stage=str(self.db.get_task(task_id).get("stage") if self.db.get_task(task_id) else "recovery"),
                 message=exc.reason,
-                detail={"classification": exc.classification.category.value},
+                detail=technical_detail,
             )
             if exc.needs_reauthorization:
                 self._mark_manual_required(
@@ -282,7 +289,13 @@ class RecoveryCoordinator:
                 )
         except Exception as exc:
             reason = safe_error(exc)
-            self.db.append_log(task_id, level="ERROR", stage="recovery", message=reason)
+            self.db.append_log(
+                task_id,
+                level="ERROR",
+                stage="recovery",
+                message=reason,
+                detail={"exception_type": type(exc).__name__, "raw_reason": reason},
+            )
             if int(task.get("attempt") or 1) < self.settings.recovery_max_attempts:
                 self._retry_task(task, reason)
             else:
@@ -300,7 +313,12 @@ class RecoveryCoordinator:
         try:
             self._sync_note_material(account_id, {})
         except Sub2APIError as exc:
-            raise RecoveryFailure(safe_error(exc), classification=exc.classification, retryable=exc.retryable) from exc
+            raise RecoveryFailure(
+                safe_error(exc),
+                classification=exc.classification,
+                retryable=exc.retryable,
+                technical_detail=_sub2api_technical_detail(exc),
+            ) from exc
         credentials = self.db.load_credentials(account_id)
         if not credentials.get("refresh_token") or not credentials.get("access_token"):
             self._log(task_id, "sync", "Fetching the selected account's encrypted credential export")
@@ -341,6 +359,7 @@ class RecoveryCoordinator:
                 "No refresh token is available for this account",
                 classification=Classification(FailureClass.AUTH_FAILURE, "refresh token missing", True, True),
                 needs_reauthorization=True,
+                technical_detail={"error_code": "missing_refresh_token", "reauthorization_required": True},
             )
 
         self.db.set_task_stage(task_id, "refresh_token")
@@ -353,16 +372,26 @@ class RecoveryCoordinator:
                     safe_error(exc),
                     classification=Classification(FailureClass.AUTH_FAILURE, safe_error(exc), True, True),
                     needs_reauthorization=True,
+                    technical_detail=_oauth_technical_detail(exc),
                 ) from exc
-            raise RecoveryFailure(safe_error(exc), retryable=True) from exc
+            raise RecoveryFailure(
+                safe_error(exc),
+                retryable=True,
+                technical_detail=_oauth_technical_detail(exc),
+            ) from exc
         if not token_set.access_token:
-            raise RecoveryFailure("OAuth refresh returned no access token", retryable=True)
+            raise RecoveryFailure(
+                "OAuth refresh returned no access token",
+                retryable=True,
+                technical_detail={"error_code": "missing_access_token"},
+            )
         credentials.update(token_set.as_credentials())
         if not credentials.get("refresh_token"):
             raise RecoveryFailure(
                 "OAuth refresh returned no refresh token",
                 classification=Classification(FailureClass.AUTH_FAILURE, "refresh token missing after refresh", True, True),
                 needs_reauthorization=True,
+                technical_detail={"error_code": "missing_refresh_token", "reauthorization_required": True},
             )
         self.db.save_credentials(account_id, credentials, email=token_set.email or mapping.get("email"))
 
@@ -399,6 +428,7 @@ class RecoveryCoordinator:
                 safe_error(exc),
                 classification=exc.classification,
                 retryable=exc.retryable,
+                technical_detail=_sub2api_technical_detail(exc),
             ) from exc
         result = self._status_check(account_id, task_id, "status_check")
         if not result.success:
@@ -408,8 +438,14 @@ class RecoveryCoordinator:
                     result.reason,
                     classification=classification,
                     needs_reauthorization=True,
+                    technical_detail=_account_test_technical_detail(result),
                 )
-            raise RecoveryFailure(result.reason, classification=classification, retryable=True)
+            raise RecoveryFailure(
+                result.reason,
+                classification=classification,
+                retryable=True,
+                technical_detail=_account_test_technical_detail(result),
+            )
         self._finish_success(task_id, account_id, method)
 
     def _sync_account_credentials(self, account_id: int) -> None:
@@ -502,7 +538,12 @@ class RecoveryCoordinator:
             self.sub2api.recover_state(account_id)
             self.sub2api.set_schedulable(account_id, True)
         except Sub2APIError as exc:
-            raise RecoveryFailure(safe_error(exc), classification=exc.classification, retryable=exc.retryable) from exc
+            raise RecoveryFailure(
+                safe_error(exc),
+                classification=exc.classification,
+                retryable=exc.retryable,
+                technical_detail=_sub2api_technical_detail(exc),
+            ) from exc
         self.db.update_account_state(
             account_id,
             status="healthy",
@@ -567,7 +608,7 @@ class RecoveryCoordinator:
                     failure_class=classification.category.value,
                     failure_reason=f"Automatic reauthorization exhausted its retries: {message}",
                 )
-                self._log(task_id, "automatic_reauthorization", message)
+                self._log(task_id, "automatic_reauthorization", message, exc)
                 return
             except RecoveryFailure:
                 raise
@@ -586,7 +627,7 @@ class RecoveryCoordinator:
                     failure_class=classification.category.value,
                     failure_reason=message,
                 )
-                self._log(task_id, "automatic_reauthorization", message)
+                self._log(task_id, "automatic_reauthorization", message, exc)
                 return
 
         try:
@@ -641,6 +682,7 @@ class RecoveryCoordinator:
             task_id,
             "retry_wait",
             "Automatic reauthorization will retry after a transient browser or security failure",
+            {"classification": classification.category.value, "raw_reason": safe_error(reason)},
         )
 
     def _retry_task(self, task: dict[str, Any], reason: str) -> None:
@@ -648,7 +690,12 @@ class RecoveryCoordinator:
         delay = self.settings.recovery_backoff_seconds * max(1, int(task.get("attempt") or 1))
         available = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(timespec="seconds")
         self.db.finish_task(task_id, status="queued", stage="retry_wait", error_reason=safe_error(reason), available_at=available)
-        self._log(task_id, "retry_wait", f"Recovery will retry after a transient failure: {reason}")
+        self._log(
+            task_id,
+            "retry_wait",
+            f"Recovery will retry after a transient failure: {reason}",
+            {"retryable": True, "backoff_seconds": delay, "raw_reason": safe_error(reason)},
+        )
 
     def start_reauthorization(self, account_id: int, *, task_id: str | None = None) -> dict[str, Any]:
         if not self.db.get_mapping(account_id):
@@ -801,14 +848,44 @@ class RecoveryCoordinator:
 
     def _log(self, task_id: str, stage: str, message: str, detail: Any | None = None) -> None:
         if isinstance(detail, AccountTestResult):
-            detail = {
-                "success": detail.success,
-                "status_code": detail.status_code,
-                "classification": detail.classification.category.value if detail.classification else None,
-            }
+            detail = _account_test_technical_detail(detail)
         elif isinstance(detail, Sub2APIError):
-            detail = {"status_code": detail.status_code, "classification": detail.classification.category.value if detail.classification else None}
+            detail = _sub2api_technical_detail(detail)
+        elif isinstance(detail, OAuthError):
+            detail = _oauth_technical_detail(detail)
+        elif isinstance(detail, AutomaticBrowserError):
+            detail = {
+                "error_type": type(detail).__name__,
+                "automation_stage": detail.stage,
+                "retryable": detail.retryable,
+            }
+        elif isinstance(detail, TOTPError):
+            detail = {"error_type": type(detail).__name__}
         self.db.append_log(task_id, level="INFO", stage=stage, message=message, detail=detail if isinstance(detail, dict) else None)
+
+
+def _account_test_technical_detail(result: AccountTestResult) -> dict[str, Any]:
+    return {
+        "success": result.success,
+        "status_code": result.status_code,
+        "classification": result.classification.category.value if result.classification else None,
+    }
+
+
+def _sub2api_technical_detail(error: Sub2APIError) -> dict[str, Any]:
+    return {
+        "operation": error.operation,
+        "status_code": error.status_code,
+        "classification": error.classification.category.value if error.classification else None,
+        "retryable": error.retryable,
+    }
+
+
+def _oauth_technical_detail(error: OAuthError) -> dict[str, Any]:
+    return {
+        "error_code": error.error_code or None,
+        "reauthorization_required": error.reauth_required,
+    }
 
 
 def normalize_snapshot(raw: dict[str, Any]) -> dict[str, Any]:

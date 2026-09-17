@@ -82,15 +82,31 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .dialog-panel.wide { max-width: 900px; }
 .dialog-panel.compact { max-width: 430px; }
 .dialog-heading { align-items: flex-start; display: flex; justify-content: space-between; }
+.dialog-heading-actions { align-items: center; display: flex; gap: 12px; }
 .dialog-heading h3 { font-size: 20px; margin: 0; }
 .icon-button { background: transparent; border: 0; color: var(--muted); font-size: 25px; line-height: 1; }
+.dialog-live-status { color: var(--teal-dark); font-size: 11px; }
 .auth-link { color: var(--teal-dark); display: block; font-weight: 750; margin-top: 20px; overflow-wrap: anywhere; }
 .dialog-actions { justify-content: flex-end; margin-top: 22px; }
-.task-meta { background: #f7f9fa; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); display: grid; gap: 7px; grid-template-columns: repeat(3, 1fr); margin: 18px 0; padding: 12px; }
+.task-meta { background: #f7f9fa; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); display: grid; gap: 10px 16px; grid-template-columns: repeat(3, 1fr); margin: 18px 0; padding: 12px; }
+.task-meta span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.task-meta strong { color: var(--ink); font-size: 11px; }
+.task-meta .task-error { grid-column: 1 / -1; }
+.task-meta .task-error strong { color: var(--red); }
 .logs { max-height: 390px; overflow: auto; }
-.log-line { border-bottom: 1px solid #edf1f2; padding: 11px 0; }
-.log-top { color: var(--muted); font-size: 11px; }
-.log-message { margin-top: 3px; }
+.log-line { border-bottom: 1px solid #edf1f2; padding: 13px 0; }
+.log-line.log-error { border-left: 3px solid var(--red); padding-left: 10px; }
+.log-top { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 11px; gap: 8px; }
+.log-stage { color: var(--teal-dark); font-weight: 750; }
+.log-message { line-height: 1.6; margin-top: 5px; }
+.log-technical { margin-top: 8px; }
+.log-technical summary { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
+.log-technical summary:hover { color: var(--teal-dark); }
+.log-technical dl { background: #f7f9fa; border: 1px solid #edf1f2; border-radius: 4px; display: grid; gap: 6px 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 8px 0 0; padding: 9px 10px; }
+.log-technical dl div { min-width: 0; }
+.log-technical dt { color: var(--muted); font-size: 11px; }
+.log-technical dd { margin: 1px 0 0; overflow-wrap: anywhere; }
+.log-technical code { color: var(--ink); font-size: 11px; }
 .settings-form { padding: 0 20px 20px; }
 .profiles-bar { align-items: center; border-bottom: 1px solid #edf1f2; display: grid; gap: 10px 18px; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); margin: 0 20px; padding: 0 0 17px; }
 .profiles-heading { align-items: baseline; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -136,6 +152,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
   .section-tools { justify-content: stretch; width: 100%; }
   .section-tools input, .section-tools select { flex: 1 1 180px; width: auto; }
   .task-meta { grid-template-columns: 1fr; }
+  .task-meta .task-error { grid-column: auto; }
+  .log-technical dl { grid-template-columns: 1fr; }
   .settings-form { padding: 0 16px 16px; }
   .settings-fields { grid-template-columns: 1fr; }
   .profiles-bar { margin: 0 16px; }
