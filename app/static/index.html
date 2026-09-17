@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260918-account-sort" />
+    <link rel="stylesheet" href="/static/style.css?v=20260918-console" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -23,41 +23,72 @@
     <div id="app-view" class="app-shell hidden">
       <header class="topbar">
         <div class="topbar-brand"><span class="brand-mark small">S2</span><span>401 Recovery</span></div>
-        <div class="topbar-actions"><span id="service-status" class="status-dot">连接中</span><button id="settings-button" class="button quiet" type="button">设置</button><button id="logout-button" class="button quiet" type="button">退出</button></div>
+        <div class="topbar-actions"><span id="service-status" class="status-dot">连接中</span><button id="theme-toggle" class="button quiet theme-toggle" type="button" aria-pressed="false" aria-label="切换夜间模式" title="切换夜间模式"><span id="theme-icon" aria-hidden="true">☾</span><span id="theme-label">夜间</span></button><button id="settings-button" class="button quiet" type="button">设置</button><button id="logout-button" class="button quiet" type="button">退出</button></div>
       </header>
-      <main class="workspace">
-        <section class="page-heading">
-          <div><p class="eyebrow">SUB2API COMPANION</p><h2>恢复控制台</h2><p class="muted">监控 OAuth 认证状态，保留原账号 ID 完成恢复。</p><div class="sync-meta" aria-live="polite"><span id="sync-status">等待首次同步</span><span id="last-updated">页面更新时间 -</span></div></div>
-          <div class="heading-actions"><button id="scan-button" class="button primary" type="button">立即扫描</button><button id="refresh-button" class="button secondary" type="button">刷新</button></div>
-        </section>
+      <div class="app-layout">
+        <aside class="sidebar" aria-label="主导航">
+          <nav class="main-nav">
+            <button class="nav-item active" type="button" data-view-target="console"><span class="nav-glyph" aria-hidden="true">⌂</span><span>恢复控制台</span></button>
+            <button class="nav-item" type="button" data-view-target="accounts"><span class="nav-glyph" aria-hidden="true">▤</span><span>账号</span></button>
+            <button class="nav-item" type="button" data-view-target="logs"><span class="nav-glyph" aria-hidden="true">≡</span><span>恢复日志</span></button>
+            <button class="nav-item" type="button" data-view-target="settings"><span class="nav-glyph" aria-hidden="true">⚙</span><span>运行配置</span></button>
+          </nav>
+          <div class="sidebar-foot"><span class="muted">自动恢复工作台</span><span id="sidebar-sync" class="muted">等待同步</span></div>
+        </aside>
 
-        <section id="metrics" class="metrics-grid"></section>
+        <main class="workspace">
+          <section id="view-console" class="view-section">
+            <section class="page-heading">
+              <div><p class="eyebrow">SUB2API COMPANION</p><h2>恢复控制台</h2><p class="muted">选中账号后，在右侧查看真实恢复流程和当前卡点。</p><div class="sync-meta" aria-live="polite"><span id="sync-status">等待首次同步</span><span id="last-updated">页面更新时间 -</span></div></div>
+              <div class="heading-actions"><button id="scan-button" class="button primary" type="button">立即扫描</button><button id="refresh-button" class="button secondary" type="button">刷新</button></div>
+            </section>
+            <section id="metrics" class="metrics-grid"></section>
+            <section class="console-workbench" aria-label="账号恢复工作台">
+              <div class="console-pane account-picker-pane">
+                <div class="pane-heading"><div><h3>选择账号</h3><p class="muted">优先显示需要处理的账号</p></div><span id="console-account-count" class="pane-count">0</span></div>
+                <div class="console-tools"><input id="console-account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索工作台账号" /><select id="console-account-filter" aria-label="筛选工作台账号"><option value="">全部账号</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="healthy">正常</option></select></div>
+                <div id="console-account-list" class="console-account-list"></div>
+                <div id="console-accounts-empty" class="empty hidden">没有匹配账号。</div>
+              </div>
+              <div class="console-pane inspector-pane">
+                <div id="recovery-empty" class="inspector-empty"><span class="empty-mark" aria-hidden="true">→</span><h3>选择一个账号开始查看</h3><p class="muted">右侧会显示恢复任务的实际阶段、最新日志和失败原因。</p></div>
+                <div id="recovery-inspector" class="hidden">
+                  <div class="inspector-header"><div><p class="eyebrow">SELECTED ACCOUNT</p><h3 id="recovery-account-name">-</h3><div id="recovery-account-meta" class="account-sub">-</div></div><div id="recovery-account-state"></div></div>
+                  <div id="recovery-actions" class="row-actions inspector-actions"></div>
+                  <div class="inspector-status"><div><span class="muted">恢复状态</span><strong id="recovery-status-text">-</strong></div><span id="recovery-live-text" class="live-text"></span></div>
+                  <ol id="recovery-timeline" class="recovery-timeline"></ol>
+                  <div class="console-log-preview"><div class="preview-heading"><div><h4>最新处理记录</h4><p class="muted">仅显示可读摘要，技术字段在日志页展开。</p></div><button id="open-selected-logs" class="button quiet" type="button">查看完整日志</button></div><div id="recovery-log-preview" class="log-preview"></div></div>
+                </div>
+              </div>
+            </section>
+          </section>
 
-        <section id="settings-section" class="content-section hidden">
-          <div class="section-heading"><div><h3>运行配置</h3><p class="muted">保存后 API 会立即加载，worker 会在下一轮轮询同步。敏感值只显示是否已配置。</p></div><button id="close-settings" class="button secondary" type="button">收起</button></div>
-          <div class="profiles-bar">
-            <div class="profiles-heading"><span class="profiles-title">配置存档</span><span class="muted">保存多套参数，按需快速切换</span></div>
-            <div class="profiles-controls"><select id="profile-select" aria-label="选择配置存档"><option value="">选择配置存档</option></select><button id="activate-profile" class="button secondary" type="button" disabled>切换</button><button id="save-profile" class="button secondary" type="button">保存当前配置</button><button id="delete-profile" class="button quiet danger" type="button" disabled>删除</button></div>
-            <span id="profile-status" class="muted"></span>
-          </div>
-          <form id="settings-form" class="settings-form">
-            <div id="settings-groups" class="settings-groups"></div>
-            <div class="settings-actions"><button id="save-settings" class="button primary" type="submit">保存配置</button><button id="reset-settings" class="button secondary" type="button">恢复 .env 默认</button><span id="settings-status" class="muted"></span></div>
-          </form>
-        </section>
+          <section id="view-accounts" class="view-section content-section hidden">
+            <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。点击表头可排序。</p></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="observed">需关注</option><option value="healthy">正常</option><option value="unknown">未知</option></select></div></div>
+            <div class="table-wrap"><table><thead><tr id="accounts-head"><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
+            <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
+          </section>
 
-        <section class="content-section">
-          <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。</p></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="healthy">正常</option></select></div></div>
-          <div class="table-wrap"><table><thead><tr id="accounts-head"><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
-          <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
-        </section>
+          <section id="view-logs" class="view-section content-section hidden">
+            <div class="section-heading"><div><h3>恢复日志</h3><p class="muted">每个账号只显示最新任务，历史记录仍保留；打开日志可查看具体阶段和技术详情。</p></div><div class="section-tools"><input id="task-search" type="search" placeholder="搜索任务、邮箱或 ID" aria-label="搜索恢复任务" /></div></div>
+            <div class="table-wrap"><table><thead><tr><th>任务</th><th>账号</th><th>阶段</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
+            <div id="tasks-empty" class="empty hidden">暂无恢复任务。</div>
+          </section>
 
-        <section class="content-section">
-          <div class="section-heading"><div><h3>恢复任务</h3><p class="muted">每个账号只显示最新任务，历史记录仍保留；日志中可查看具体处理过程。</p></div><div class="section-tools"><input id="task-search" type="search" placeholder="搜索任务、邮箱或 ID" aria-label="搜索恢复任务" /></div></div>
-          <div class="table-wrap"><table><thead><tr><th>任务</th><th>账号</th><th>阶段</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
-          <div id="tasks-empty" class="empty hidden">暂无恢复任务。</div>
-        </section>
-      </main>
+          <section id="settings-section" class="view-section content-section hidden">
+            <div class="section-heading"><div><h3>运行配置</h3><p class="muted">保存后 API 会立即加载，worker 会在下一轮轮询同步。敏感值只显示是否已配置。</p></div><button id="close-settings" class="button secondary" type="button">返回控制台</button></div>
+            <div class="profiles-bar">
+              <div class="profiles-heading"><span class="profiles-title">配置存档</span><span class="muted">保存多套参数，按需快速切换</span></div>
+              <div class="profiles-controls"><select id="profile-select" aria-label="选择配置存档"><option value="">选择配置存档</option></select><button id="activate-profile" class="button secondary" type="button" disabled>切换</button><button id="save-profile" class="button secondary" type="button">保存当前配置</button><button id="delete-profile" class="button quiet danger" type="button" disabled>删除</button></div>
+              <span id="profile-status" class="muted"></span>
+            </div>
+            <form id="settings-form" class="settings-form">
+              <div id="settings-groups" class="settings-groups"></div>
+              <div class="settings-actions"><button id="save-settings" class="button primary" type="submit">保存配置</button><button id="reset-settings" class="button secondary" type="button">恢复 .env 默认</button><span id="settings-status" class="muted"></span></div>
+            </form>
+          </section>
+        </main>
+      </div>
     </div>
 
     <dialog id="reauth-dialog">
@@ -86,6 +117,6 @@
         <p id="profile-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20260918-account-sort" defer></script>
+    <script src="/static/app.js?v=20260918-console" defer></script>
   </body>
 </html>

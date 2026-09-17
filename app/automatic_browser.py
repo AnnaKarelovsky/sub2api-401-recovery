@@ -12,7 +12,7 @@ import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 from .config import Settings
@@ -37,7 +37,14 @@ class AutomaticOAuthRunner:
         self.settings = settings
         self.mail_reader = mail_reader or ImapCodeReader(settings)
 
-    def run(self, auth_url: str, material: NoteCredentials, *, started_at: datetime | None = None) -> str:
+    def run(
+        self,
+        auth_url: str,
+        material: NoteCredentials,
+        *,
+        started_at: datetime | None = None,
+        on_stage: Callable[[str, str], None] | None = None,
+    ) -> str:
         if not material.complete:
             raise AutomaticBrowserError(
                 "complete account note credentials are required",
@@ -51,7 +58,13 @@ class AutomaticOAuthRunner:
             modes.append(False)
         for headless in modes[: max(1, self.settings.automation_browser_retries)]:
             try:
-                return self._run_once(auth_url, material, started_at=started_at, headless=headless)
+                return self._run_once(
+                    auth_url,
+                    material,
+                    started_at=started_at,
+                    headless=headless,
+                    on_stage=on_stage,
+                )
             except AutomaticBrowserError as exc:
                 last_error = exc
                 if not exc.retryable:
@@ -65,6 +78,7 @@ class AutomaticOAuthRunner:
         *,
         started_at: datetime,
         headless: bool,
+        on_stage: Callable[[str, str], None] | None = None,
     ) -> str:
         try:
             from playwright.sync_api import sync_playwright
@@ -130,10 +144,19 @@ class AutomaticOAuthRunner:
 
                             page.on("framenavigated", capture_callback)
                             page.on("response", capture_security_response)
+                            self._notify(on_stage, "browser", "Opening the OpenAI authorization page")
                             page.goto(auth_url, wait_until="domcontentloaded", timeout=60_000)
-                            self._wait_through_challenge(page)
-                            self._complete_login(page, context, material, started_at, security_failures)
-                            return self._wait_for_callback(page, callback_urls)
+                            self._notify(on_stage, "oauth_flow", "OpenAI authorization page loaded")
+                            self._wait_through_challenge(page, on_stage=on_stage)
+                            self._complete_login(
+                                page,
+                                context,
+                                material,
+                                started_at,
+                                security_failures,
+                                on_stage=on_stage,
+                            )
+                            return self._wait_for_callback(page, callback_urls, on_stage=on_stage)
                         finally:
                             if browser_owned:
                                 try:
@@ -160,6 +183,7 @@ class AutomaticOAuthRunner:
         material: NoteCredentials,
         started_at: datetime,
         security_failures: list[str] | None = None,
+        on_stage: Callable[[str, str], None] | None = None,
     ) -> None:
         email_submitted = False
         password_submitted = False
@@ -169,7 +193,7 @@ class AutomaticOAuthRunner:
             if self._is_callback(page.url):
                 return
             if self._is_challenge(page):
-                self._wait_through_challenge(page)
+                self._wait_through_challenge(page, on_stage=on_stage)
                 continue
             if security_failures:
                 raise AutomaticBrowserError(security_failures[-1], stage="security_challenge", retryable=True)
@@ -196,13 +220,16 @@ class AutomaticOAuthRunner:
             ):
                 if _contains_any(body, ("authenticator", "two-factor", "2fa", "verification app")):
                     if not totp_used:
+                        self._notify(on_stage, "totp", "Generating and submitting the authenticator code")
                         self._fill_code(page, totp_code(material.totp_secret), stage="totp")
                         totp_used = True
                         self._click_action(page)
                 elif not email_code_used:
-                    code = self._mail_code(context, material, started_at)
+                    self._notify(on_stage, "email_code", "Waiting for the email verification code")
+                    code = self._mail_code(context, material, started_at, on_stage=on_stage)
                     self._fill_code(page, code, stage="email_code")
                     email_code_used = True
+                    self._notify(on_stage, "email_code", "Email verification code received and submitted")
                     self._click_action(page)
                 page.wait_for_timeout(800)
                 continue
@@ -215,6 +242,7 @@ class AutomaticOAuthRunner:
                     "input[placeholder*='email' i]",
                 ))
                 if email_input is not None:
+                    self._notify(on_stage, "email", "Submitting the account email")
                     email_input.fill(material.email)
                     email_submitted = True
                     self._click_action(page)
@@ -224,6 +252,7 @@ class AutomaticOAuthRunner:
             if not password_submitted:
                 password_input = self._first_visible(page, ("input[type='password']",))
                 if password_input is not None:
+                    self._notify(on_stage, "openai_password", "Submitting the OpenAI account password")
                     password_input.fill(material.openai_password)
                     password_submitted = True
                     self._click_action(page)
@@ -231,13 +260,22 @@ class AutomaticOAuthRunner:
                     continue
 
             if self._click_consent_or_continue(page):
+                self._notify(on_stage, "oauth_flow", "Submitting the OAuth consent or continue step")
                 page.wait_for_timeout(900)
                 continue
             page.wait_for_timeout(1000)
 
         raise AutomaticBrowserError("OAuth page did not reach callback", stage="oauth_flow", retryable=True)
 
-    def _mail_code(self, context: Any, material: NoteCredentials, started_at: datetime) -> str:
+    def _mail_code(
+        self,
+        context: Any,
+        material: NoteCredentials,
+        started_at: datetime,
+        *,
+        on_stage: Callable[[str, str], None] | None = None,
+    ) -> str:
+        self._notify(on_stage, "email_code", "Reading the verification code from the mailbox")
         try:
             return self.mail_reader.wait_for_code(
                 material.email,
@@ -251,6 +289,7 @@ class AutomaticOAuthRunner:
             try:
                 from .mailbox import OutlookWebCodeReader
 
+                self._notify(on_stage, "email_code", "IMAP did not return a code; trying Outlook webmail")
                 return OutlookWebCodeReader(self.settings).wait_for_code(
                     material.email,
                     material.email_password,
@@ -265,11 +304,22 @@ class AutomaticOAuthRunner:
                     retryable=second_error.retryable,
                 ) from first_error
 
-    def _wait_through_challenge(self, page: Any) -> None:
+    def _wait_through_challenge(
+        self,
+        page: Any,
+        *,
+        on_stage: Callable[[str, str], None] | None = None,
+    ) -> None:
+        notified = False
         deadline = time.monotonic() + self.settings.automation_challenge_timeout_seconds
         while time.monotonic() < deadline:
             if self._is_callback(page.url) or not self._is_challenge(page):
+                if notified:
+                    self._notify(on_stage, "security_challenge", "Security challenge cleared")
                 return
+            if not notified:
+                self._notify(on_stage, "security_challenge", "Waiting for the OpenAI security challenge")
+                notified = True
             page.wait_for_timeout(3000)
         raise AutomaticBrowserError(
             "OAuth security challenge did not clear before timeout",
@@ -277,17 +327,40 @@ class AutomaticOAuthRunner:
             retryable=True,
         )
 
-    def _wait_for_callback(self, page: Any, callback_urls: list[str] | None = None) -> str:
+    def _wait_for_callback(
+        self,
+        page: Any,
+        callback_urls: list[str] | None = None,
+        *,
+        on_stage: Callable[[str, str], None] | None = None,
+    ) -> str:
+        self._notify(on_stage, "callback", "Waiting for the OAuth callback")
         deadline = time.monotonic() + self.settings.playwright_timeout_seconds
         while time.monotonic() < deadline:
             if callback_urls:
+                self._notify(on_stage, "callback", "OAuth callback received")
                 return callback_urls[-1]
             if self._is_callback(page.url):
+                self._notify(on_stage, "callback", "OAuth callback received")
                 return page.url
             page.wait_for_timeout(1000)
         if callback_urls:
             return callback_urls[-1]
         raise AutomaticBrowserError("OAuth callback was not reached", stage="callback", retryable=True)
+
+    @staticmethod
+    def _notify(
+        on_stage: Callable[[str, str], None] | None,
+        stage: str,
+        message: str,
+    ) -> None:
+        if not on_stage:
+            return
+        try:
+            on_stage(stage, message)
+        except Exception:
+            # Progress reporting must never interrupt the authorization flow.
+            return
 
     def _is_callback(self, url: str) -> bool:
         parsed = urlparse(str(url))
