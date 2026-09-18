@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 - 2026-09-18
+
+### Prebuilt release installation
+
+- Added a GitHub Actions release workflow that tests tagged versions and publishes Docker images to GHCR.
+- Added a release-only Compose file that runs the prebuilt image without a local Python or Chromium build.
+- Added `install-release.sh` to initialize secrets, pull the release image, and start the service after `.env` is configured.
+- Documented the release installation path for new deployments.
+
 ## 0.1.0 - 2026-09-18
 
 ### Phase 1: research

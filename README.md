@@ -52,6 +52,29 @@ CAPTCHA、Cloudflare、MFA 或其他服务方安全检查；如果上游要求�
 
 ### 安装
 
+#### 使用预构建 Release 安装（推荐）
+
+如果不希望在部署主机上安装 Python、编译依赖或下载 Chromium，可以直接使用 GitHub Release
+提供的预构建 Docker 镜像。主机只需要 Docker Engine、Docker Compose v2、`curl` 和
+`openssl`：
+
+```bash
+mkdir -p sub2api-401-recovery
+cd sub2api-401-recovery
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.1.1/install-release.sh -o install-release.sh
+chmod +x install-release.sh
+./install-release.sh
+```
+
+首次运行会下载 `docker-compose.release.yml` 和 `.env.example`，生成本地加密密钥，拉取
+`ghcr.io/annakarelovsky/sub2api-401-recovery:v0.1.1`，并在 `.env` 缺少必填值时停止。编辑
+`.env` 填好 Sub2API 地址、Admin API key 或 JWT、Dashboard 密码后，再次运行脚本即可启动。
+数据、备份和 `.env` 都保存在当前目录，不会进入 Docker 镜像。
+
+#### 从源码安装
+
+源码安装适合开发或无法访问 GHCR 的环境，会在本地构建包含 Chromium 的镜像：
+
 ```bash
 chmod +x install.sh update.sh backup.sh
 ./install.sh

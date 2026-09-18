@@ -2,6 +2,33 @@
 
 ## 1. 安装
 
+### 使用预构建 Release 镜像（推荐）
+
+部署主机只需要 Docker Engine、Docker Compose v2、`curl` 和 `openssl`。不需要安装 Python
+或在本地构建 Chromium：
+
+```bash
+mkdir -p sub2api-401-recovery
+cd sub2api-401-recovery
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.1.1/install-release.sh -o install-release.sh
+chmod +x install-release.sh
+./install-release.sh
+```
+
+首次执行会生成 `.env` 和加密密钥，并拉取对应 Release 的 GHCR 镜像。编辑 `.env` 填写
+`SUB2API_BASE_URL`、`SUB2API_ADMIN_KEY`（或 `SUB2API_JWT`）和 `DASHBOARD_PASSWORD`，
+然后再次执行 `./install-release.sh`。
+
+升级到新版本时，设置目标版本并重新执行脚本：
+
+```bash
+RECOVERY_VERSION=v0.1.1 ./install-release.sh
+```
+
+脚本会保留已有 `.env`、`data/` 和 `backups/`。
+
+### 从源码构建
+
 Debian 12 需要 Docker Engine 和 Compose v2。将项目放到 NAS 后执行：
 
 ```bash
