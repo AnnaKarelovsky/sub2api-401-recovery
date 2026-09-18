@@ -286,8 +286,8 @@ function renderSync(sync) {
     if (state.sync.removed) label += ` · 隐藏 ${state.sync.removed} 个已删除账号`;
   }
   if (state.sync.status === "failed" && state.sync.reason) label += ` · ${state.sync.reason}`;
-  $("#sync-status").textContent = label;
-  $("#last-updated").textContent = state.lastUpdatedAt ? `页面更新 ${formatDate(state.lastUpdatedAt)}` : "页面更新时间 -";
+  const syncStatus = $("#sync-status");
+  if (syncStatus) syncStatus.textContent = label;
   $("#sidebar-sync").textContent = label;
 }
 
@@ -777,10 +777,6 @@ $("#refresh-button").addEventListener("click", async () => {
   button.textContent = "更新中...";
   try { await loadAll(); } catch (error) { alert(error.message); }
   finally { button.disabled = false; button.textContent = "刷新"; }
-});
-$("#settings-button").addEventListener("click", async () => {
-  showView("settings");
-  try { await loadSettings(); } catch (error) { alert(error.message); }
 });
 $("#close-settings").addEventListener("click", () => showView("console"));
 $("#settings-form").addEventListener("submit", async (event) => {

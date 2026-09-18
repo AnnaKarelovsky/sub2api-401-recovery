@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - 2026-09-16
+## 0.1.0 - 2026-09-18
 
 ### Phase 1: research
 
@@ -36,4 +36,11 @@ Validation: unit and API tests are maintained under `tests/`; live Sub2API/OpenA
 - Captures HTTP 403/429 responses from the OpenAI authorization continuation endpoint as a redacted `security_challenge` failure instead of reporting only a generic OAuth-flow timeout.
 - Live acceptance: account `222` reached the real browser and note-driven flow, but OpenAI returned HTTP 403 at email submission after the configured browser retries; account `269` was blocked because its note is incomplete.
 
-Validation: `34 passed`; Ruff, Python compile, shell syntax, Compose config, Docker image startup, `/api/v1/healthz`, and static index checks pass.
+### Dashboard layout
+
+- Removed the duplicate top status bar and redundant console heading block.
+- Moved scan and refresh actions into the left navigation.
+- Expanded the account and recovery detail workbench to use the viewport height.
+- Removed the outer page scrollbar while preserving internal account and detail scrolling.
+
+Validation: `43 passed`; Ruff, Python compile, shell syntax, Compose config, Docker image startup, `/api/v1/healthz`, static index checks, and production Playwright layout checks pass.

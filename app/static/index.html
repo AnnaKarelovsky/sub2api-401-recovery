@@ -21,27 +21,27 @@
     </div>
 
     <div id="app-view" class="app-shell hidden">
-      <header class="topbar">
-        <div class="topbar-brand"><span class="brand-mark small">S2</span><span>401 Recovery</span></div>
-        <div class="topbar-actions"><span id="service-status" class="status-dot">连接中</span><button id="theme-toggle" class="button quiet theme-toggle" type="button" aria-pressed="false" aria-label="切换夜间模式" title="切换夜间模式"><span id="theme-icon" aria-hidden="true">☾</span><span id="theme-label">夜间</span></button><button id="settings-button" class="button quiet" type="button">设置</button><button id="logout-button" class="button quiet" type="button">退出</button></div>
-      </header>
       <div class="app-layout">
         <aside class="sidebar" aria-label="主导航">
-          <nav class="main-nav">
-            <button class="nav-item active" type="button" data-view-target="console"><span class="nav-glyph" aria-hidden="true">⌂</span><span>恢复控制台</span></button>
-            <button class="nav-item" type="button" data-view-target="accounts"><span class="nav-glyph" aria-hidden="true">▤</span><span>账号</span></button>
-            <button class="nav-item" type="button" data-view-target="logs"><span class="nav-glyph" aria-hidden="true">≡</span><span>恢复日志</span></button>
-            <button class="nav-item" type="button" data-view-target="settings"><span class="nav-glyph" aria-hidden="true">⚙</span><span>运行配置</span></button>
-          </nav>
-          <div class="sidebar-foot"><span class="muted">自动恢复工作台</span><span id="sidebar-sync" class="muted">等待同步</span></div>
+          <div class="sidebar-main">
+            <div class="sidebar-brand"><span class="brand-mark small">S2</span><div><strong>401 Recovery</strong><span>Sub2API companion</span></div></div>
+            <nav class="main-nav">
+              <button class="nav-item active" type="button" data-view-target="console"><span class="nav-glyph" aria-hidden="true">⌂</span><span>恢复控制台</span></button>
+              <button class="nav-item" type="button" data-view-target="accounts"><span class="nav-glyph" aria-hidden="true">▤</span><span>账号</span></button>
+              <button class="nav-item" type="button" data-view-target="logs"><span class="nav-glyph" aria-hidden="true">≡</span><span>恢复日志</span></button>
+              <button class="nav-item" type="button" data-view-target="settings"><span class="nav-glyph" aria-hidden="true">⚙</span><span>运行配置</span></button>
+            </nav>
+            <div class="sidebar-operations" aria-label="控制操作"><button id="scan-button" class="button primary sidebar-operation" type="button">立即扫描</button><button id="refresh-button" class="button secondary sidebar-operation" type="button">刷新</button></div>
+          </div>
+          <div class="sidebar-footer">
+            <div class="sidebar-status"><span id="service-status" class="status-dot">连接中</span><span id="sidebar-sync" class="muted">等待同步</span></div>
+            <div class="sidebar-actions"><button id="theme-toggle" class="button sidebar-action theme-toggle" type="button" aria-pressed="false" aria-label="切换夜间模式" title="切换夜间模式"><span id="theme-icon" class="nav-glyph" aria-hidden="true">☾</span><span id="theme-label">夜间</span></button><button id="logout-button" class="button sidebar-action" type="button"><span class="nav-glyph" aria-hidden="true">↪</span><span>退出登录</span></button></div>
+            <span class="muted sidebar-caption">自动恢复工作台</span>
+          </div>
         </aside>
 
         <main class="workspace">
           <section id="view-console" class="view-section">
-            <section class="page-heading">
-              <div><p class="eyebrow">SUB2API COMPANION</p><h2>恢复控制台</h2><p class="muted">选中账号后，在右侧查看真实恢复流程和当前卡点。</p><div class="sync-meta" aria-live="polite"><span id="sync-status">等待首次同步</span><span id="last-updated">页面更新时间 -</span></div></div>
-              <div class="heading-actions"><button id="scan-button" class="button primary" type="button">立即扫描</button><button id="refresh-button" class="button secondary" type="button">刷新</button></div>
-            </section>
             <section id="metrics" class="metrics-grid"></section>
             <section class="console-workbench" aria-label="账号恢复工作台">
               <div class="console-pane account-picker-pane">
