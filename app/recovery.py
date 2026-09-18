@@ -908,6 +908,13 @@ def normalize_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str, Any]:
+    automation_fields = (
+        ("email", "登录邮箱"),
+        ("email_password", "邮箱密码"),
+        ("openai_password", "OpenAI 密码"),
+        ("totp_secret", "2FA 密钥"),
+    )
+    automation_missing = [label for key, label in automation_fields if not credentials.get(key)]
     return {
         "sub2api_account_id": int(row["sub2api_account_id"]),
         "email": row.get("email") or "",
@@ -925,6 +932,8 @@ def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str
         "expires_at": credentials.get("expires_at"),
         "chatgpt_account_id": credentials.get("chatgpt_account_id") or "",
         "plan_type": credentials.get("plan_type") or "",
+        "automation_ready": not automation_missing,
+        "automation_missing": automation_missing,
     }
 
 

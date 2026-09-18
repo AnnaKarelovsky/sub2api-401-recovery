@@ -120,6 +120,11 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .inspector-status div { display: grid; gap: 2px; }
 .inspector-status strong { font-size: 17px; }
 .live-text { color: var(--teal-dark); font-size: 11px; }
+.inspector-alert { border: 1px solid; border-radius: 5px; display: grid; gap: 3px; margin-top: 16px; padding: 11px 13px; }
+.inspector-alert strong { font-size: 12px; }
+.inspector-alert span { font-size: 12px; line-height: 1.5; }
+.inspector-alert.blocked { background: #fbeaea; border-color: #edb4b4; color: var(--red); }
+.inspector-alert.waiting { background: #fff7d8; border-color: #edd99c; color: #8a6512; }
 .recovery-timeline { list-style: none; margin: 19px 0 24px; padding: 0; }
 .timeline-step { display: grid; grid-template-columns: 30px minmax(0, 1fr); min-height: 61px; position: relative; }
 .timeline-step:not(:last-child)::before { background: var(--line); content: ""; left: 14px; position: absolute; top: 29px; bottom: -2px; width: 1px; }
@@ -132,9 +137,11 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .timeline-step.done .timeline-marker { background: #e6f4ed; border-color: #b8dfcc; color: var(--green); }
 .timeline-step.running .timeline-marker { background: #fff1e7; border-color: #f3c8a9; color: var(--orange); }
 .timeline-step.error .timeline-marker { background: #fbeaea; border-color: #edb4b4; color: var(--red); }
+.timeline-step.blocked .timeline-marker { background: #fbeaea; border-color: #edb4b4; color: var(--red); }
 .timeline-step.skipped .timeline-marker { color: var(--muted); }
 .timeline-step.running .timeline-title strong { color: var(--teal-dark); }
 .timeline-step.error .timeline-title strong { color: var(--red); }
+.timeline-step.blocked .timeline-title strong { color: var(--red); }
 .console-log-preview { border-top: 1px solid var(--line); padding-top: 18px; }
 .preview-heading { gap: 12px; }
 .preview-heading h4 { font-size: 14px; margin: 0 0 2px; }
@@ -229,6 +236,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .button:disabled, .mini-button:disabled { cursor: wait; opacity: .6; }
 :root[data-theme="dark"] .state.healthy, :root[data-theme="dark"] .timeline-step.done .timeline-marker { background: rgba(104, 208, 157, .16); border-color: rgba(104, 208, 157, .42); }
 :root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
+:root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
+:root[data-theme="dark"] .inspector-alert.waiting { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
 :root[data-theme="dark"] .state.recovering, :root[data-theme="dark"] .state.queued, :root[data-theme="dark"] .state.running, :root[data-theme="dark"] .state.observed, :root[data-theme="dark"] .timeline-step.running .timeline-marker { background: rgba(241, 154, 98, .15); border-color: rgba(241, 154, 98, .42); }
 :root[data-theme="dark"] .state.reauth_required, :root[data-theme="dark"] .state.manual_required { background: rgba(224, 190, 76, .16); color: #f0cd69; }
 @media (max-width: 900px) {

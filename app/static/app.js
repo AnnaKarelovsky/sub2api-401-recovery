@@ -10,7 +10,7 @@ const RECOVERY_FLOW = [
   { key: "credentials", label: "读取账号材料", stages: ["sync"], description: "读取备注和加密凭据，敏感值不会显示在页面。" },
   { key: "native_refresh", label: "尝试原生刷新", stages: ["native_refresh"], description: "优先调用 Sub2API 原生 OAuth 刷新。" },
   { key: "refresh_token", label: "刷新 OAuth 令牌", stages: ["refresh_token"], description: "原生刷新未完成时，使用本地刷新令牌继续恢复。" },
-  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
+  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
   { key: "callback", label: "接收回调并建立会话", stages: ["callback", "token_exchange", "reauthorization"], description: "校验 OAuth 回调和 PKCE 后交换会话令牌。" },
   { key: "apply", label: "写回原账号凭据", stages: ["apply_credentials"], description: "将新 OAuth 凭据写回原 Sub2API 账号 ID。" },
   { key: "verify", label: "恢复并验证状态", stages: ["status_check", "recover_state", "succeeded"], description: "清理错误状态，恢复可调度性并再次检查账号。" },
@@ -221,6 +221,7 @@ function humanizeLogMessage(log) {
     "OAuth authorization completed; queued credential application": "OAuth 授权已完成，凭据写回任务已排队。",
     "Account note does not contain complete automation credentials": "账号备注缺少自动登录所需信息，自动恢复已暂停。",
     "Refresh token is not usable; administrator action is required": "刷新令牌不可用，需要重新授权。",
+    "Your refresh token has been invalidated. Please try signing in again.": "刷新令牌已失效，需要重新登录 OpenAI。",
   };
   if (exact[message]) return exact[message];
   if (message.startsWith("Account recovered successfully using ")) {
@@ -258,6 +259,8 @@ function taskErrorSummary(task) {
   if (!task.error_reason) return "-";
   if (task.status === "retry_wait") return "遇到临时问题，等待自动重试。";
   if (task.status === "manual_required" || task.stage === "reauthorization") return "需要重新授权。";
+  if (task.status === "skipped" && task.stage === "automation_blocked") return "自动恢复未执行：账号备注缺少完整自动登录材料。";
+  if (task.status === "skipped") return "任务已跳过：" + task.error_reason;
   if (task.status === "failed") return "任务未完成，请查看下方日志中的技术详情。";
   return "处理中，请查看下方日志。";
 }
@@ -368,7 +371,10 @@ async function loadAll() {
     renderConsole();
     renderAccounts();
     renderTasks();
-    await loadSelectedTask();
+    const latestSelectedTask = latestTaskForAccount(state.selectedAccountId);
+    const selectedTaskChanged = latestSelectedTask && (!state.selectedTask || String(state.selectedTask.id) !== String(latestSelectedTask.id));
+    const selectedTaskRemoved = !latestSelectedTask && state.selectedTask;
+    if (selectedTaskChanged || selectedTaskRemoved) await loadSelectedTask();
     $("#service-status").textContent = "已连接";
   })();
   try {
@@ -416,13 +422,16 @@ function renderConsoleAccounts() {
     .sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
   $("#console-account-count").textContent = `${items.length}/${state.accounts.length}`;
   $("#console-accounts-empty").classList.toggle("hidden", items.length > 0);
-  $("#console-account-list").innerHTML = items.map((account) => {
+  const list = $("#console-account-list");
+  const scrollTop = list.scrollTop;
+  list.innerHTML = items.map((account) => {
     const accountId = String(account.sub2api_account_id);
     const selected = accountId === String(state.selectedAccountId);
     const task = latestTaskForAccount(accountId);
     const secondary = account.failure_reason || account.plan_type || "OpenAI OAuth";
     return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}${stateBadge(account.status)}</span></button>`;
   }).join("");
+  list.scrollTop = scrollTop;
 }
 
 function timelineStageIndex(task) {
@@ -441,6 +450,7 @@ function timelineStageIndex(task) {
 function timelineStepStatus(step, index, task) {
   if (!task) return "pending";
   const relevantLogs = (task.logs || []).filter((log) => step.stages.includes(log.stage));
+  if (relevantLogs.some((log) => log.stage === "automation_blocked")) return "blocked";
   const error = relevantLogs.some((log) => String(log.level || "").toUpperCase() === "ERROR");
   if (error) return "error";
   const currentIndex = timelineStageIndex(task);
@@ -466,10 +476,10 @@ function timelineStepDescription(step, status, task) {
 }
 
 function renderRecoveryTimeline(task) {
-  const markers = { done: "✓", running: "…", pending: "", skipped: "–", error: "!" };
+  const markers = { done: "✓", running: "…", pending: "", skipped: "–", error: "!", blocked: "!" };
   $("#recovery-timeline").innerHTML = RECOVERY_FLOW.map((step, index) => {
     const status = timelineStepStatus(step, index, task);
-    const statusLabelText = { done: "已完成", running: task?.status === "manual_required" && index === timelineStageIndex(task) ? "等待授权" : "处理中", pending: "待执行", skipped: "未需要", error: "出错" }[status];
+    const statusLabelText = { done: "已完成", running: task?.status === "manual_required" && index === timelineStageIndex(task) ? "等待授权" : "处理中", pending: "待执行", skipped: "未需要", error: "出错", blocked: "已阻止" }[status];
     return `<li class="timeline-step ${status}"><span class="timeline-marker" aria-hidden="true">${markers[status]}</span><div class="timeline-copy"><div class="timeline-title"><strong>${escapeHtml(step.label)}</strong><span>${statusLabelText}</span></div><p>${escapeHtml(timelineStepDescription(step, status, task))}</p></div></li>`;
   }).join("");
 }
@@ -491,6 +501,8 @@ function renderRecoveryInspector() {
     inspector.classList.add("hidden");
     empty.classList.remove("hidden");
     $("#open-selected-logs").disabled = true;
+    $("#recovery-alert").className = "inspector-alert hidden";
+    $("#recovery-alert").textContent = "";
     return;
   }
   inspector.classList.remove("hidden");
@@ -499,9 +511,27 @@ function renderRecoveryInspector() {
   $("#recovery-account-name").textContent = accountName(account);
   $("#recovery-account-meta").textContent = `Sub2API ID ${account.sub2api_account_id} · ${account.plan_type || "OpenAI OAuth"}`;
   $("#recovery-account-state").innerHTML = stateBadge(account.status);
-  $("#recovery-actions").innerHTML = `${actionButton("recover", account.sub2api_account_id, "开始恢复")}${actionButton("test", account.sub2api_account_id, "检查状态")}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
-  $("#recovery-status-text").textContent = task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务";
+  const automationBlocked = account.status === "automation_blocked" || task?.stage === "automation_blocked";
+  const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
+  $("#recovery-actions").innerHTML = `${actionButton("recover", account.sub2api_account_id, automationBlocked ? "重新尝试" : "开始恢复")}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
+  $("#recovery-status-text").textContent = automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"));
   $("#recovery-live-text").textContent = task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : "");
+  const alert = $("#recovery-alert");
+  if (automationBlocked) {
+    const missing = account.automation_missing || [];
+    const missingText = missing.length ? `缺少：${missing.join("、")}。` : "没有读取到完整的自动登录材料。";
+    const refreshInvalidated = task?.logs?.some((log) => log.message === "Your refresh token has been invalidated. Please try signing in again." || log.detail?.error_code === "refresh_token_invalidated");
+    const refreshText = refreshInvalidated ? "旧 OAuth 刷新令牌已失效，浏览器流程尚未启动。" : "";
+    alert.className = "inspector-alert blocked";
+    alert.innerHTML = `<strong>自动恢复未执行</strong><span>${escapeHtml(`${refreshText}${missingText}请在 Sub2API 账号备注中补齐后，再点击“重新尝试”。`)}</span>`;
+  } else if (waitingAuthorization) {
+    const reason = task?.error_reason || account.failure_reason || "刷新令牌已失效，需要重新登录 OpenAI。";
+    alert.className = "inspector-alert waiting";
+    alert.innerHTML = `<strong>需要重新授权</strong><span>${escapeHtml(humanizeLogMessage({ message: reason }))}</span>`;
+  } else {
+    alert.className = "inspector-alert hidden";
+    alert.textContent = "";
+  }
   $("#open-selected-logs").disabled = !task;
   renderRecoveryTimeline(task);
   renderRecoveryLogPreview(task);
@@ -554,9 +584,11 @@ async function loadSelectedTask() {
   stopSelectedTaskRefresh();
   const accountId = state.selectedAccountId;
   const summary = latestTaskForAccount(accountId);
-  state.selectedTask = null;
-  renderRecoveryInspector();
-  if (!summary) return;
+  if (!summary) {
+    state.selectedTask = null;
+    renderRecoveryInspector();
+    return;
+  }
   try {
     const task = await api(`/api/v1/tasks/${summary.id}`);
     if (requestId !== selectedTaskRequest || String(state.selectedAccountId) !== String(accountId)) return;
