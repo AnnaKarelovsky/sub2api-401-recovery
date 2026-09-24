@@ -195,6 +195,54 @@ class RecoveryCoordinator:
         finally:
             self._scan_lock.release()
 
+    def sync_materials(self, *, source: str = "worker-daily") -> dict[str, int]:
+        """Read every remote account note and refresh local automation-material status."""
+        if not self._scan_lock.acquire(blocking=False):
+            self.db.record_event(
+                "materials_sync_skipped",
+                "Account material sync skipped because another account operation is already running",
+                {"source": source},
+            )
+            return {"skipped": 1}
+        try:
+            self.db.record_event("materials_sync_started", "Account material sync started", {"source": source})
+            accounts = self.sub2api.list_accounts()
+            found = checked = failed = 0
+            remote_account_ids: set[int] = set()
+            for raw in accounts:
+                snapshot = normalize_snapshot(raw)
+                account_id = snapshot.get("sub2api_account_id")
+                if not account_id:
+                    continue
+                found += 1
+                account_id = int(account_id)
+                remote_account_ids.add(account_id)
+                self.db.upsert_account_snapshot(snapshot)
+                try:
+                    self._sync_note_material(account_id, raw)
+                except Exception as exc:
+                    failed += 1
+                    self.db.record_event(
+                        "account_notes_sync_failed",
+                        "Could not read account note credentials during material sync",
+                        {"account_id": account_id, "reason": safe_error(exc)},
+                    )
+                else:
+                    checked += 1
+            removed = self.db.mark_accounts_missing(remote_account_ids)
+            result = {"found": found, "checked": checked, "failed": failed, "removed": removed}
+            self.db.record_event("materials_sync_completed", "Account material sync completed", result)
+            return result
+        except Exception as exc:
+            self.db.record_event(
+                "materials_sync_failed",
+                "Account material sync failed",
+                {"reason": safe_error(exc)},
+            )
+            raise
+        finally:
+            self._scan_lock.release()
+
     def _probe_due(self, last_test_at: Any) -> bool:
         if not self.settings.scan_probe_active_accounts:
             return False

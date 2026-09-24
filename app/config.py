@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from typing import Any, Mapping
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +39,9 @@ DASHBOARD_SETTING_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "scan_page_size", "label": "每页账号数", "type": "integer", "min": 1, "max": 1000},
             {"key": "scan_probe_active_accounts", "label": "检查正常账号", "type": "boolean"},
             {"key": "scan_probe_interval_seconds", "label": "正常账号检查间隔（秒）", "type": "integer", "min": 10, "max": 604800},
+            {"key": "material_sync_enabled", "label": "每日同步账号备注材料", "type": "boolean"},
+            {"key": "material_sync_hour", "label": "备注同步时间（小时）", "type": "integer", "min": 0, "max": 23},
+            {"key": "material_sync_timezone", "label": "备注同步时区", "type": "text"},
             {"key": "recovery_max_attempts", "label": "恢复重试次数", "type": "integer", "min": 1, "max": 20},
             {"key": "recovery_backoff_seconds", "label": "任务重试等待（秒）", "type": "integer", "min": 0, "max": 86400},
             {"key": "worker_poll_seconds", "label": "worker 轮询间隔（秒）", "type": "integer", "min": 1, "max": 300},
@@ -156,6 +160,9 @@ class Settings(BaseSettings):
     scan_page_size: int = 100
     scan_probe_active_accounts: bool = True
     scan_probe_interval_seconds: int = 900
+    material_sync_enabled: bool = True
+    material_sync_hour: int = 0
+    material_sync_timezone: str = "Asia/Shanghai"
     recovery_max_attempts: int = 3
     recovery_backoff_seconds: int = 30
     worker_poll_seconds: int = 3
@@ -204,6 +211,10 @@ class Settings(BaseSettings):
                 raise ValueError("SUB2API_ADMIN_KEY or SUB2API_JWT must be configured")
         if self.scan_interval_seconds < 10:
             raise ValueError("SCAN_INTERVAL_SECONDS must be at least 10")
+        try:
+            ZoneInfo(self.material_sync_timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("MATERIAL_SYNC_TIMEZONE must be a valid IANA timezone") from exc
 
 
 @lru_cache(maxsize=1)
