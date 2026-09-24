@@ -120,6 +120,7 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .material-status.complete { background: #e6f4ed; color: var(--green); }
 .material-status.partial { background: #fff1e7; color: var(--orange); }
 .material-status.missing { background: #fbeaea; color: var(--red); }
+.material-status.unverified { background: #edf1f3; color: #5e6b73; }
 .inspector-pane { min-height: 0; overflow: auto; padding: 25px 28px; }
 .inspector-empty { align-items: center; display: flex; flex-direction: column; height: 100%; justify-content: center; min-height: 300px; text-align: center; }
 .inspector-empty h3 { font-size: 18px; margin: 14px 0 4px; }
@@ -254,6 +255,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .material-status.complete { background: rgba(104, 208, 157, .16); color: var(--green); }
 :root[data-theme="dark"] .material-status.partial { background: rgba(241, 154, 98, .15); color: var(--orange); }
 :root[data-theme="dark"] .material-status.missing { background: rgba(240, 122, 122, .15); color: var(--red); }
+:root[data-theme="dark"] .material-status.unverified { background: rgba(170, 183, 189, .15); color: #b5c1c6; }
 :root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.waiting { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
