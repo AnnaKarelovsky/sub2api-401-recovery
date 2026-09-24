@@ -76,6 +76,7 @@ class Database:
                         last_recovery_at TEXT,
                         last_test_at TEXT,
                         last_seen_at TEXT,
+                        materials_checked_at TEXT,
                         remote_present INTEGER NOT NULL DEFAULT 1,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
@@ -175,6 +176,10 @@ class Database:
                 if "remote_present" not in columns:
                     conn.execute(
                         "ALTER TABLE account_mapping ADD COLUMN remote_present INTEGER NOT NULL DEFAULT 1"
+                    )
+                if "materials_checked_at" not in columns:
+                    conn.execute(
+                        "ALTER TABLE account_mapping ADD COLUMN materials_checked_at TEXT"
                     )
                 runtime_meta_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(runtime_settings_meta)")
@@ -504,6 +509,15 @@ class Database:
             email=str(credentials.get("email") or mapping.get("email") or "").strip().lower(),
             username=str(mapping.get("username") or ""),
         )
+
+    def mark_materials_checked(self, account_id: int) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE account_mapping SET materials_checked_at = ?, updated_at = ? "
+                "WHERE sub2api_account_id = ?",
+                (now, now, account_id),
+            )
 
     def load_credentials(self, account_id: int) -> dict[str, Any]:
         row = self.get_mapping(account_id)

@@ -92,12 +92,16 @@ function stateBadge(value) {
 function materialStatusText(account) {
   const count = Number(account.automation_configured_count || 0);
   const total = Number(account.automation_total || 4);
+  if (!account.automation_materials_checked) return "未检查";
   if (account.automation_complete) return `${count}/${total} 完整`;
   if (account.automation_ready) return `${count}/${total} 可尝试`;
   return `${count}/${total} 缺少必填`;
 }
 
 function materialStatus(account) {
+  if (!account.automation_materials_checked) {
+    return '<span class="material-status unverified" title="尚未读取账号备注或录入自动登录材料">未检查</span>';
+  }
   const kind = account.automation_complete ? "complete" : (account.automation_ready ? "partial" : "missing");
   const missing = (account.automation_missing || []).join("、");
   const title = missing ? `缺少：${missing}` : "四项自动登录材料已配置";

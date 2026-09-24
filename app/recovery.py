@@ -460,16 +460,20 @@ class RecoveryCoordinator:
         mapping = self.db.get_mapping(account_id) or {}
         existing = self.db.load_credentials(account_id)
         notes = raw.get("notes") if isinstance(raw, dict) else None
+        notes_loaded = notes is not None
         if notes is None:
             get_account = getattr(self.sub2api, "get_account", None)
             if get_account is not None:
                 detail = get_account(account_id)
                 notes = detail.get("notes") if isinstance(detail, dict) else ""
+                notes_loaded = True
         parsed = parse_account_notes(notes, fallback_email=str(mapping.get("email") or ""))
         merged = dict(existing)
         merged.update(parsed.as_dict())
         if parsed.as_dict():
             self.db.save_credentials(account_id, merged, email=parsed.email, username=str(mapping.get("username") or ""))
+        if notes_loaded:
+            self.db.mark_materials_checked(account_id)
         return self._material_from_credentials(merged, parsed.email or str(mapping.get("email") or ""))
 
     @staticmethod
@@ -863,6 +867,7 @@ class RecoveryCoordinator:
         if "email" in normalized and ("@" not in normalized["email"] or len(normalized["email"]) > 320):
             raise ValueError("login email is invalid")
         self.db.save_account_material(account_id, normalized)
+        self.db.mark_materials_checked(account_id)
         updated = self.db.get_mapping(account_id) or row
         material = self._material_from_credentials(
             self.db.load_credentials(account_id),
@@ -945,6 +950,14 @@ def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str
         openai_password=str(credentials.get("openai_password") or ""),
         totp_secret=str(credentials.get("totp_secret") or ""),
     )
+    explicit_material_configured = any(
+        credentials.get(field) for field in ("email_password", "openai_password", "totp_secret")
+    )
+    materials_checked = bool(row.get("materials_checked_at")) or explicit_material_configured
+    # Older databases predate materials_checked_at. An automation_blocked state is
+    # definitive evidence that the recovery flow already evaluated the materials.
+    if row.get("status") == "automation_blocked":
+        materials_checked = True
     return {
         "sub2api_account_id": int(row["sub2api_account_id"]),
         "email": row.get("email") or "",
@@ -966,6 +979,8 @@ def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str
         "automation_complete": material.complete,
         "automation_configured_count": material.configured_count,
         "automation_total": 4,
+        "automation_materials_checked": materials_checked,
+        "automation_materials_checked_at": row.get("materials_checked_at"),
         "automation_missing": list(material.missing_fields),
         "automation_required_missing": list(material.missing_required_fields),
         "automation_optional_missing": [

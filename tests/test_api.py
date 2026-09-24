@@ -83,11 +83,29 @@ def test_account_materials_can_be_saved_partially_without_exposing_secrets(setti
         assert body["automation_ready"] is True
         assert body["automation_complete"] is False
         assert body["automation_configured_count"] == 3
+        assert body["automation_materials_checked"] is True
         assert body["automation_missing"] == ["2FA 密钥"]
         assert "mail-pass" not in response.text
         assert "gpt-pass" not in response.text
         assert b"mail-pass" not in open(settings.database_path, "rb").read()
         assert b"gpt-pass" not in open(settings.database_path, "rb").read()
+
+
+def test_unchecked_account_materials_are_not_reported_as_missing(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot(
+            {"sub2api_account_id": 78, "email": "untested@example.com", "status": "healthy"}
+        )
+
+        response = client.get("/api/v1/accounts/78", headers=headers)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["automation_materials_checked"] is False
+        assert body["automation_configured_count"] == 1
 
 
 def test_dashboard_setting_profiles_can_switch_complete_configs(settings):
