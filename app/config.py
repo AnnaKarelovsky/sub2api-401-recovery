@@ -51,7 +51,7 @@ DASHBOARD_SETTING_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "playwright_headless", "label": "无头浏览器", "type": "boolean"},
             {"key": "playwright_timeout_seconds", "label": "浏览器超时（秒）", "type": "integer", "min": 30, "max": 3600},
             {"key": "playwright_proxy", "label": "浏览器代理", "type": "secret"},
-            {"key": "automation_require_complete_notes", "label": "备注信息不完整时阻止自动化", "type": "boolean"},
+            {"key": "automation_require_complete_notes", "label": "缺少登录必需材料时阻止自动化", "type": "boolean"},
             {"key": "automation_browser_retries", "label": "浏览器启动重试次数", "type": "integer", "min": 1, "max": 10},
             {"key": "automation_challenge_timeout_seconds", "label": "安全挑战等待（秒）", "type": "integer", "min": 10, "max": 3600},
             {"key": "automation_retry_forever", "label": "可重试问题持续重试", "type": "boolean"},

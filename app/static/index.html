@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260918-console-2" />
+    <link rel="stylesheet" href="/static/style.css?v=20260924-materials" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -46,14 +46,14 @@
             <section class="console-workbench" aria-label="账号恢复工作台">
               <div class="console-pane account-picker-pane">
                 <div class="pane-heading"><div><h3>选择账号</h3><p class="muted">优先显示需要处理的账号</p></div><span id="console-account-count" class="pane-count">0</span></div>
-                <div class="console-tools"><input id="console-account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索工作台账号" /><select id="console-account-filter" aria-label="筛选工作台账号"><option value="">全部账号</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="healthy">正常</option></select></div>
+                <div class="console-tools"><input id="console-account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索工作台账号" /><select id="console-account-filter" aria-label="筛选工作台账号"><option value="">全部账号</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">材料不足</option><option value="healthy">正常</option></select></div>
                 <div id="console-account-list" class="console-account-list"></div>
                 <div id="console-accounts-empty" class="empty hidden">没有匹配账号。</div>
               </div>
               <div class="console-pane inspector-pane">
                 <div id="recovery-empty" class="inspector-empty"><span class="empty-mark" aria-hidden="true">→</span><h3>选择一个账号开始查看</h3><p class="muted">右侧会显示恢复任务的实际阶段、最新日志和失败原因。</p></div>
                 <div id="recovery-inspector" class="hidden">
-                  <div class="inspector-header"><div><p class="eyebrow">SELECTED ACCOUNT</p><h3 id="recovery-account-name">-</h3><div id="recovery-account-meta" class="account-sub">-</div></div><div id="recovery-account-state"></div></div>
+                  <div class="inspector-header"><div><p class="eyebrow">SELECTED ACCOUNT</p><h3 id="recovery-account-name">-</h3><div id="recovery-account-meta" class="account-sub">-</div><div id="recovery-account-material" class="account-material-summary"></div></div><div id="recovery-account-state"></div></div>
                   <div id="recovery-actions" class="row-actions inspector-actions"></div>
                   <div class="inspector-status"><div><span class="muted">恢复状态</span><strong id="recovery-status-text">-</strong></div><span id="recovery-live-text" class="live-text"></span></div>
                   <div id="recovery-alert" class="inspector-alert hidden" role="status"></div>
@@ -65,8 +65,8 @@
           </section>
 
           <section id="view-accounts" class="view-section content-section hidden">
-            <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。点击表头可排序。</p></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">备注不完整</option><option value="observed">需关注</option><option value="healthy">正常</option><option value="unknown">未知</option></select></div></div>
-            <div class="table-wrap"><table><thead><tr id="accounts-head"><th>账号</th><th>Sub2API ID</th><th>状态</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
+            <div class="section-heading"><div><h3>账号</h3><p class="muted">仅显示脱敏状态，不返回 token。点击表头可排序。</p></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="reauth_required">等待授权</option><option value="automation_blocked">材料不足</option><option value="observed">需关注</option><option value="healthy">正常</option><option value="unknown">未知</option></select></div></div>
+            <div class="table-wrap"><table><thead><tr id="accounts-head"><th>账号</th><th>Sub2API ID</th><th>状态</th><th>自动登录材料</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
             <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
           </section>
 
@@ -103,6 +103,21 @@
       </form>
     </dialog>
 
+    <dialog id="materials-dialog">
+      <form method="dialog" class="dialog-panel compact materials-panel" id="materials-form">
+        <div class="dialog-heading"><div><p class="eyebrow">ACCOUNT MATERIALS</p><h3>自动登录材料</h3><div id="materials-account-name" class="account-name">-</div><div id="materials-account-meta" class="account-sub">-</div></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <p class="muted materials-help">四项材料可以分开补录。登录邮箱和 OpenAI 密码是启动自动授权的最低条件；邮箱验证码和 2FA 只有页面实际要求时才需要。密码与密钥会加密保存，页面不回显原文。</p>
+        <div class="materials-grid">
+          <label>登录邮箱<input id="material-email" type="email" autocomplete="username" maxlength="320" /></label>
+          <label>邮箱密码<input id="material-email-password" type="password" autocomplete="new-password" maxlength="1000" placeholder="留空保持已配置值" /></label>
+          <label>OpenAI 密码<input id="material-openai-password" type="password" autocomplete="new-password" maxlength="1000" placeholder="留空保持已配置值" /></label>
+          <label>2FA 密钥<input id="material-totp-secret" type="password" autocomplete="new-password" maxlength="500" placeholder="留空保持已配置值" /></label>
+        </div>
+        <div class="dialog-actions"><button class="button secondary" value="cancel" type="button" id="cancel-materials">取消</button><button class="button primary" value="default" type="submit" id="save-materials">保存材料</button></div>
+        <p id="materials-dialog-status" class="muted"></p>
+      </form>
+    </dialog>
+
     <dialog id="task-dialog">
       <form method="dialog" class="dialog-panel wide" id="task-form">
         <div class="dialog-heading"><div><p class="eyebrow">RECOVERY LOG</p><h3 id="task-title">任务详情</h3></div><div class="dialog-heading-actions"><span id="task-dialog-status" class="dialog-live-status" aria-live="polite"></span><button class="icon-button" value="cancel" aria-label="关闭">×</button></div></div>
@@ -118,6 +133,6 @@
         <p id="profile-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20260918-console" defer></script>
+    <script src="/static/app.js?v=20260924-materials" defer></script>
   </body>
 </html>

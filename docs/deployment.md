@@ -88,11 +88,16 @@ MAIL_POLL_SECONDS=5
 OUTLOOK_WEBMAIL_ENABLED=true
 ```
 
-当备注缺少邮箱密码、OpenAI 密码或 TOTP 时，账号进入 `automation_blocked`，不会创建自动登录任务。浏览器挑战、临时 403/429 和网络故障会按退避重新排队；启用 `AUTOMATION_RETRY_FOREVER=true` 时，worker 会持续自动重试，不会把这类临时故障转成“请手工登录”。只有账号材料缺失或明确凭据错误等不可重试错误才会停止。容器没有图形桌面时，自动化仍会通过 Xvfb 启动有头浏览器；只有在运行环境提供可用的 `DISPLAY` 或 VNC 时，才适合把 `PLAYWRIGHT_HEADLESS` 设为 `false`。
+缺少登录邮箱或 OpenAI 密码时，账号进入 `automation_blocked`，不会创建可执行的自动登录任务。邮箱密码和 TOTP
+属于按页面需要读取的可选材料：没有邮箱验证码时不要求邮箱密码，没有 2FA 页面时不要求 TOTP；如果页面实际
+出现对应步骤，任务会在该阶段明确提示缺少材料。浏览器挑战、临时 403/429 和网络故障会按退避重新排队；启用
+`AUTOMATION_RETRY_FOREVER=true` 时，worker 会持续自动重试，不会把这类临时故障转成“请手工登录”。容器没有
+图形桌面时，自动化仍会通过 Xvfb 启动有头浏览器；只有在运行环境提供可用的 `DISPLAY` 或 VNC 时，才适合把
+`PLAYWRIGHT_HEADLESS` 设为 `false`。
 
 如果使用 `AUTOMATION_CDP_URL`，应提供一个专用的真实 Chromium 实例，例如通过 CDP 暴露的 NAS 浏览器；不要直接复用个人浏览器配置目录。CDP 浏览器由外部进程管理，worker 只复用其页面上下文并在完成后关闭自己创建的页面。
 
-手工授权入口仍保留给没有完整备注材料的运维场景：
+手工授权入口仍保留给没有登录必需材料，或自动浏览器在安全挑战中无法继续的运维场景：
 
 ```dotenv
 PLAYWRIGHT_ENABLED=true
@@ -140,5 +145,5 @@ docker compose up -d
 - Web 登录使用环境变量账号和密码，dashboard API 使用签名 bearer token。
 - 日志只记录阶段、状态、错误分类和脱敏原因；不会记录密码、token、TOTP、cookie 或 authorization code。
 - 备注原文不会写入本地数据库；解析后的邮箱密码、OpenAI 密码和 TOTP 只以 AES-256-GCM 加密形式保存。
-- `AUTOMATION_REQUIRE_COMPLETE_NOTES=true` 时，只有具备完整备注材料的账号会自动重登；其他账号显示为 `automation_blocked`。
+- `AUTOMATION_REQUIRE_COMPLETE_NOTES=true` 时，只有缺少登录邮箱或 OpenAI 密码的账号会被自动化前置校验阻止；账号材料可在 Dashboard 的“材料”入口中加密补录。
 - 自动恢复只处理明确的 OAuth 认证失败；429、403、网络错误和未知错误不会被误当成 401。

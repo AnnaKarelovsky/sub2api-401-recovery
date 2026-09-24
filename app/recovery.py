@@ -103,18 +103,12 @@ class RecoveryCoordinator:
                             {"account_id": int(account_id), "reason": safe_error(exc)},
                         )
                         material = self._material_from_credentials(local_credentials, current.get("email", ""))
-                    if self.settings.automation_require_complete_notes and not material.complete:
+                    if self.settings.automation_require_complete_notes and not material.ready_for_automation:
                         self._block_automation(
                             int(account_id),
                             classification,
-                            "Account note does not contain complete automation credentials",
+                            _automation_block_reason(material),
                         )
-                        continue
-                    if (
-                        current.get("status") == "automation_blocked"
-                        and current.get("failure_reason")
-                        == "Account note does not contain complete automation credentials"
-                    ):
                         continue
                     task_id, created = self.enqueue_recovery(
                         int(account_id),
@@ -166,11 +160,11 @@ class RecoveryCoordinator:
                         if probe_is_auth:
                             auth_failures += 1
                             material = self._sync_note_material(int(account_id), {})
-                            if self.settings.automation_require_complete_notes and not material.complete:
+                            if self.settings.automation_require_complete_notes and not material.ready_for_automation:
                                 self._block_automation(
                                     int(account_id),
                                     probe.classification,
-                                    "Account note does not contain complete automation credentials",
+                                    _automation_block_reason(material),
                                 )
                                 continue
                             task_id, created = self.enqueue_recovery(
@@ -566,7 +560,7 @@ class RecoveryCoordinator:
         if self.settings.automation_require_complete_notes:
             try:
                 material = self._sync_note_material(account_id, {})
-                if material.complete:
+                if material.ready_for_automation:
                     session = self.start_reauthorization(account_id, task_id=task_id)
                     self.db.set_task_stage(task_id, "automatic_reauthorization")
                     self._log(task_id, "automatic_reauthorization", "Starting automated OAuth browser recovery")
@@ -846,6 +840,43 @@ class RecoveryCoordinator:
         credentials = self.db.load_credentials(account_id)
         return public_account(row, credentials)
 
+    def update_account_materials(self, account_id: int, values: dict[str, Any]) -> dict[str, Any]:
+        row = self.db.get_mapping(account_id)
+        if not row:
+            try:
+                raw = self.sub2api.get_account(account_id)
+            except Sub2APIError:
+                raise
+            self.db.upsert_account_snapshot(normalize_snapshot(raw))
+            row = self.db.get_mapping(account_id)
+        if not row:
+            raise KeyError(f"account mapping not found: {account_id}")
+        normalized: dict[str, str] = {}
+        for key in ("email", "email_password", "openai_password", "totp_secret"):
+            value = values.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{key} must be a string")
+            if isinstance(value, str) and value.strip():
+                normalized[key] = value.strip()
+        if not normalized:
+            raise ValueError("at least one account material field is required")
+        if "email" in normalized and ("@" not in normalized["email"] or len(normalized["email"]) > 320):
+            raise ValueError("login email is invalid")
+        self.db.save_account_material(account_id, normalized)
+        updated = self.db.get_mapping(account_id) or row
+        material = self._material_from_credentials(
+            self.db.load_credentials(account_id),
+            str(updated.get("email") or ""),
+        )
+        if updated.get("status") == "automation_blocked" and material.ready_for_automation:
+            self.db.update_account_state(
+                account_id,
+                status="auth_failed",
+                failure_class=str(updated.get("failure_class") or FailureClass.AUTH_FAILURE.value),
+                failure_reason="OAuth authentication failure is ready for recovery",
+            )
+        return self.account_view(account_id) or {}
+
     def accounts_view(self) -> list[dict[str, Any]]:
         return [public_account(row, self.db.load_credentials(int(row["sub2api_account_id"]))) for row in self.db.list_accounts()]
 
@@ -908,13 +939,12 @@ def normalize_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str, Any]:
-    automation_fields = (
-        ("email", "登录邮箱"),
-        ("email_password", "邮箱密码"),
-        ("openai_password", "OpenAI 密码"),
-        ("totp_secret", "2FA 密钥"),
+    material = NoteCredentials(
+        email=str(credentials.get("email") or row.get("email") or "").strip().lower(),
+        email_password=str(credentials.get("email_password") or ""),
+        openai_password=str(credentials.get("openai_password") or ""),
+        totp_secret=str(credentials.get("totp_secret") or ""),
     )
-    automation_missing = [label for key, label in automation_fields if not credentials.get(key)]
     return {
         "sub2api_account_id": int(row["sub2api_account_id"]),
         "email": row.get("email") or "",
@@ -932,8 +962,15 @@ def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str
         "expires_at": credentials.get("expires_at"),
         "chatgpt_account_id": credentials.get("chatgpt_account_id") or "",
         "plan_type": credentials.get("plan_type") or "",
-        "automation_ready": not automation_missing,
-        "automation_missing": automation_missing,
+        "automation_ready": material.ready_for_automation,
+        "automation_complete": material.complete,
+        "automation_configured_count": material.configured_count,
+        "automation_total": 4,
+        "automation_missing": list(material.missing_fields),
+        "automation_required_missing": list(material.missing_required_fields),
+        "automation_optional_missing": [
+            label for label in material.missing_fields if label not in material.missing_required_fields
+        ],
     }
 
 
@@ -971,6 +1008,11 @@ def _sub2api_credentials(credentials: dict[str, Any]) -> dict[str, Any]:
         "cookies",
     }
     return {key: value for key, value in credentials.items() if str(key).lower() not in local_only}
+
+
+def _automation_block_reason(material: NoteCredentials) -> str:
+    missing = ", ".join(material.missing_required_fields)
+    return f"Automatic authorization requires: {missing}" if missing else "Automatic authorization material is unavailable"
 
 
 def _first(query: dict[str, list[str]], key: str) -> str:

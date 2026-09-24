@@ -45,9 +45,9 @@ class AutomaticOAuthRunner:
         started_at: datetime | None = None,
         on_stage: Callable[[str, str], None] | None = None,
     ) -> str:
-        if not material.complete:
+        if not material.ready_for_automation:
             raise AutomaticBrowserError(
-                "complete account note credentials are required",
+                "login email and OpenAI password are required to start automatic authorization",
                 stage="credentials",
                 retryable=False,
             )
@@ -220,11 +220,23 @@ class AutomaticOAuthRunner:
             ):
                 if _contains_any(body, ("authenticator", "two-factor", "2fa", "verification app")):
                     if not totp_used:
+                        if not material.totp_secret:
+                            raise AutomaticBrowserError(
+                                "2FA secret is not configured for this account",
+                                stage="totp",
+                                retryable=False,
+                            )
                         self._notify(on_stage, "totp", "Generating and submitting the authenticator code")
                         self._fill_code(page, totp_code(material.totp_secret), stage="totp")
                         totp_used = True
                         self._click_action(page)
                 elif not email_code_used:
+                    if not material.email_password:
+                        raise AutomaticBrowserError(
+                            "email mailbox password is not configured for this account",
+                            stage="email_code",
+                            retryable=False,
+                        )
                     self._notify(on_stage, "email_code", "Waiting for the email verification code")
                     code = self._mail_code(context, material, started_at, on_stage=on_stage)
                     self._fill_code(page, code, stage="email_code")

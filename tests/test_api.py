@@ -58,6 +58,38 @@ def test_dashboard_settings_are_encrypted_and_reloadable(settings):
         assert settings.sub2api_admin_key == "admin-key"
 
 
+def test_account_materials_can_be_saved_partially_without_exposing_secrets(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot(
+            {"sub2api_account_id": 77, "email": "old@example.com", "status": "auth_failed"}
+        )
+
+        response = client.put(
+            "/api/v1/accounts/77/materials",
+            headers=headers,
+            json={
+                "email": "owner@example.com",
+                "email_password": "mail-pass",
+                "openai_password": "gpt-pass",
+                "totp_secret": "",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["automation_ready"] is True
+        assert body["automation_complete"] is False
+        assert body["automation_configured_count"] == 3
+        assert body["automation_missing"] == ["2FA 密钥"]
+        assert "mail-pass" not in response.text
+        assert "gpt-pass" not in response.text
+        assert b"mail-pass" not in open(settings.database_path, "rb").read()
+        assert b"gpt-pass" not in open(settings.database_path, "rb").read()
+
+
 def test_dashboard_setting_profiles_can_switch_complete_configs(settings):
     with TestClient(create_app(settings)) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})

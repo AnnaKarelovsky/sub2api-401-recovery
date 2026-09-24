@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.mailbox import ImapCodeReader
-from app.note_credentials import parse_account_notes
+from app.note_credentials import NoteCredentials, parse_account_notes
 from app.totp import normalize_totp_secret, totp_code
 from app.automatic_browser import AutomaticOAuthRunner
 
@@ -30,6 +30,18 @@ def test_parse_note_key_values_and_fallback_email():
 
     assert parsed.email == "owner@example.com"
     assert parsed.complete
+
+
+def test_partial_material_is_ready_until_an_optional_step_is_reached(settings):
+    material = NoteCredentials(email="owner@example.com", openai_password="gpt-pass")
+    assert material.ready_for_automation
+    assert not material.complete
+    assert material.missing_required_fields == ()
+    assert material.missing_fields == ("邮箱密码", "2FA 密钥")
+
+    runner = AutomaticOAuthRunner(settings)
+    runner._run_once = lambda auth_url, received, **kwargs: "http://localhost:1455/auth/callback?code=x&state=y"
+    assert runner.run("https://auth.example.test", material) == "http://localhost:1455/auth/callback?code=x&state=y"
 
 
 def test_totp_matches_rfc6238_vector():
