@@ -451,7 +451,7 @@ function renderConsoleAccounts() {
     const selected = accountId === String(state.selectedAccountId);
     const task = latestTaskForAccount(accountId);
     const secondary = account.failure_reason || account.plan_type || "OpenAI OAuth";
-    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}${materialStatus(account)}${stateBadge(account.status)}</span></button>`;
+    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><span class="console-account-side-top"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}</span><span class="console-account-side-bottom">${materialStatus(account)}${stateBadge(account.status)}</span></span></button>`;
   }).join("");
   list.scrollTop = scrollTop;
 }
