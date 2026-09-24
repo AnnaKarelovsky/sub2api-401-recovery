@@ -303,6 +303,10 @@ docker compose logs --tail=100 recovery-api recovery-worker
 docker compose logs -f recovery-worker
 ```
 
+worker 默认会在首次启动时读取一次所有账号备注，之后每天按 `Asia/Shanghai` 00:00 自动读取一次。
+这项同步只更新账号材料状态，不会调用模型或启动恢复；可以在 Dashboard 的“扫描与恢复”中关闭、修改执行小时和时区。
+对应的环境变量是 `MATERIAL_SYNC_ENABLED`、`MATERIAL_SYNC_HOUR` 和 `MATERIAL_SYNC_TIMEZONE`。
+
 备份数据库：
 
 ```bash

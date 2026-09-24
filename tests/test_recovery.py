@@ -42,6 +42,14 @@ class ScanSub2API(FakeSub2API):
         return self.accounts
 
 
+class MaterialSyncSub2API(ScanSub2API):
+    def get_account(self, account_id):
+        return {
+            "id": account_id,
+            "notes": "邮箱: owner@example.com\nOpenAI密码: gpt-pass",
+        }
+
+
 class ErrorScanSub2API(ScanSub2API):
     def __init__(self):
         super().__init__()
@@ -102,6 +110,20 @@ def test_scan_marks_deactivated_workspace_as_account_error(database, settings):
     assert mapping["status"] == "account_error"
     assert mapping["failure_class"] == "ACCOUNT_ERROR"
     assert mapping["failure_reason"] == "Sub2API workspace is deactivated"
+
+
+def test_material_sync_reads_notes_without_creating_recovery_tasks(database, settings):
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, MaterialSyncSub2API(), FakeOAuth(), settings))
+
+    result = coordinator.sync_materials()
+
+    assert result == {"found": 1, "checked": 1, "failed": 0, "removed": 0}
+    mapping = database.get_mapping(7)
+    assert mapping["materials_checked_at"]
+    credentials = database.load_credentials(7)
+    assert credentials["email"] == "owner@example.com"
+    assert credentials["openai_password"] == "gpt-pass"
+    assert database.list_tasks(limit=10) == []
 
 
 def test_automatic_security_failure_is_requeued_with_backoff(database, settings):

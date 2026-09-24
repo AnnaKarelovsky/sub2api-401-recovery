@@ -976,6 +976,18 @@ class Database:
             result["reason"] = str(detail["reason"])
         return result
 
+    def latest_event_at(self, event_types: tuple[str, ...]) -> str | None:
+        if not event_types:
+            return None
+        placeholders = ", ".join("?" for _ in event_types)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT created_at FROM app_events WHERE event_type IN ({placeholders}) "
+                "ORDER BY id DESC LIMIT 1",
+                event_types,
+            ).fetchone()
+        return str(row["created_at"]) if row else None
+
     def record_event(self, event_type: str, message: str, detail: dict[str, Any] | None = None) -> None:
         with self.connect() as conn:
             conn.execute(
