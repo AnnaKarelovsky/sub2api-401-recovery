@@ -48,6 +48,13 @@ class CompleteOAuthRequest(BaseModel):
     state: str = ""
 
 
+class AccountMaterialsUpdate(BaseModel):
+    email: str = Field(default="", max_length=320)
+    email_password: str = Field(default="", max_length=1000)
+    openai_password: str = Field(default="", max_length=1000)
+    totp_secret: str = Field(default="", max_length=500)
+
+
 class DashboardSettingsUpdate(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     clear_secrets: list[str] = Field(default_factory=list)
@@ -340,6 +347,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             force=False,
         )
         return {"task_id": task_id, "created": created}
+
+    @app.put("/api/v1/accounts/{account_id}/materials")
+    def update_account_materials(
+        account_id: int,
+        payload: AccountMaterialsUpdate,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        try:
+            return rt.coordinator.update_account_materials(account_id, payload.model_dump())
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Sub2APIError as exc:
+            raise HTTPException(status_code=502, detail=safe_error(exc)) from exc
 
     @app.post("/api/v1/accounts/{account_id}/status")
     def account_status(

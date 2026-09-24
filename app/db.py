@@ -488,6 +488,23 @@ class Database:
                 ),
             )
 
+    def save_account_material(self, account_id: int, values: dict[str, Any]) -> None:
+        """Merge browser-login material without replacing OAuth credentials."""
+        mapping = self.get_mapping(account_id)
+        if not mapping:
+            raise KeyError(f"account mapping not found: {account_id}")
+        credentials = self.load_credentials(account_id)
+        for key in ("email", "email_password", "openai_password", "totp_secret"):
+            value = values.get(key)
+            if isinstance(value, str) and value.strip():
+                credentials[key] = value.strip()
+        self.save_credentials(
+            account_id,
+            credentials,
+            email=str(credentials.get("email") or mapping.get("email") or "").strip().lower(),
+            username=str(mapping.get("username") or ""),
+        )
+
     def load_credentials(self, account_id: int) -> dict[str, Any]:
         row = self.get_mapping(account_id)
         if not row:

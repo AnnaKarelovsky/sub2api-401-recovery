@@ -17,6 +17,30 @@ class NoteCredentials:
     def complete(self) -> bool:
         return all((self.email, self.email_password, self.openai_password, self.totp_secret))
 
+    @property
+    def ready_for_automation(self) -> bool:
+        """The browser can start; mailbox and MFA values are flow-dependent."""
+        return bool(self.email and self.openai_password)
+
+    @property
+    def configured_count(self) -> int:
+        return sum(bool(value) for value in (self.email, self.email_password, self.openai_password, self.totp_secret))
+
+    @property
+    def missing_fields(self) -> tuple[str, ...]:
+        labels = {
+            "email": "登录邮箱",
+            "email_password": "邮箱密码",
+            "openai_password": "OpenAI 密码",
+            "totp_secret": "2FA 密钥",
+        }
+        return tuple(label for field, label in labels.items() if not getattr(self, field))
+
+    @property
+    def missing_required_fields(self) -> tuple[str, ...]:
+        required = {"email": "登录邮箱", "openai_password": "OpenAI 密码"}
+        return tuple(label for field, label in required.items() if not getattr(self, field))
+
     def as_dict(self) -> dict[str, str]:
         return {
             key: value

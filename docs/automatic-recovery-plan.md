@@ -6,7 +6,7 @@
 
 1. 通过 Sub2API Admin API 读取原账号详情和 `notes`。
 2. 从备注中识别邮箱、邮箱密码、OpenAI/GPT 密码和 TOTP/2FA 密钥。
-3. 仅对备注信息完整的账号启动自动恢复；信息不完整的账号不进入自动登录任务。
+3. 具备登录邮箱和 OpenAI 密码即可启动自动恢复；邮箱密码和 TOTP 在对应页面出现时按需校验。
 4. 使用真实 Chromium 完成 OpenAI OAuth 页面登录，不绕过 CAPTCHA、Cloudflare 或其他安全验证。
 5. 通过邮箱 IMAP 获取一次性验证码，必要时使用 Outlook Webmail 浏览器回退；使用本地 TOTP 算法生成 2FA 验证码。
 6. 完成 OAuth callback、PKCE token exchange，并把新凭据原子写回原 Sub2API 账号。
@@ -25,9 +25,9 @@
 ### 3.1 备注解析与凭据边界
 
 - 新增容错的 key/value 解析器，支持中英文标签、冒号、等号、Markdown 行和常见空白格式。
-- 邮箱优先使用备注值，并校验与 Sub2API 账号邮箱一致；邮箱密码、OpenAI 密码和 TOTP 密钥必须分别存在。
+- 邮箱优先使用备注值，并回退到 Sub2API 账号邮箱；登录邮箱和 OpenAI 密码是启动浏览器的必需字段，邮箱密码和 TOTP 密钥按页面步骤需要。
 - 只保存解析后的必要字段，使用现有 AES-256-GCM 加密列；不保存原始备注，不把密码、验证码、TOTP 或 token 写入日志、API 响应或前端。
-- 备注缺字段时将账号标记为 `automation_blocked`，不创建可执行的自动恢复任务。
+- 缺少启动必需字段时将账号标记为 `automation_blocked`；可在 Dashboard 为账号加密补录材料，补录后恢复任务重新具备执行条件。
 
 ### 3.2 邮箱验证码
 
@@ -45,7 +45,7 @@
 
 ### 3.4 任务编排与写回
 
-- 自动任务在执行前同步备注凭据；具备完整材料才进入浏览器流程。
+- 自动任务在执行前同步备注凭据并合并 Dashboard 补录材料；具备登录邮箱和 OpenAI 密码才进入浏览器流程，邮箱验证码和 TOTP 在页面实际要求时校验。
 - OAuth 成功后保留旧 refresh token 的 rotation-safe 逻辑，校验 token 身份与原账号一致。
 - 使用现有 `apply-oauth-credentials`、账号状态检查、`recover-state`、`schedulable` API，成功后任务为 `succeeded`。
 - 任何中间失败都保持原账号 ID，不删除、不创建替代账号；账号级锁和 stale task 回收继续有效。

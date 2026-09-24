@@ -14,8 +14,8 @@ token 和浏览器材料会使用 AES-256-GCM 加密后保存；Dashboard、API 
 - 通过 Admin API 读取 OpenAI OAuth 和 setup-token 账号。
 - 直接读取账号详情判断 401，不通过模型请求测试账号，因此不会因为 `gpt-5.4` 模型不支持而产生测试报错。
 - 对明确的 401、`token_revoked`、`invalid_token` 等认证失败自动创建恢复任务。
-- 从账号 `notes` 识别邮箱、邮箱密码、OpenAI/GPT 密码和 TOTP/2FA 密钥。
-- 备注材料完整时，使用真实 Chromium 自动完成邮箱、密码、邮箱验证码、TOTP、授权确认和 OAuth callback。
+- 从账号 `notes` 识别邮箱、邮箱密码、OpenAI/GPT 密码和 TOTP/2FA 密钥；也可以直接在 Dashboard 为单个账号补录材料。
+- 登录邮箱和 OpenAI/GPT 密码是启动真实 Chromium 自动授权的最低条件；邮箱验证码密码和 TOTP 只在登录页面实际要求对应步骤时才需要。
 - 自动完成 PKCE code exchange，将凭据写回原账号，检查状态并恢复调度。
 - Dashboard 支持运行配置、配置存档、手动扫描、恢复任务和脱敏日志查看。
 - 对临时网络错误、403/429 和浏览器安全挑战按退避策略重试。
@@ -24,8 +24,8 @@ token 和浏览器材料会使用 AES-256-GCM 加密后保存；Dashboard、API 
 
 本项目只服务于你有权管理的 Sub2API 和 OpenAI 账号。自动化使用真实授权页面，不绕过
 CAPTCHA、Cloudflare、MFA 或其他服务方安全检查；如果上游要求真人完成挑战，任务会保留
-脱敏失败原因并按配置重试。备注缺少必要材料的账号会标记为 `automation_blocked`，不会
-被强行执行自动登录。
+脱敏失败原因并按配置重试。缺少启动自动授权所需材料的账号会标记为 `automation_blocked`，不会被
+强行执行自动登录。
 
 ## 快速开始
 
@@ -179,24 +179,23 @@ worker 周期性扫描账号：
 
 ### 自动恢复的必要条件
 
-自动恢复只对满足以下条件的账号生效，条件缺一项就不会完成纯自动登录：
+自动恢复只对满足以下条件的账号生效：
 
 1. Sub2API Admin API 可用，并且账号详情中能读取到原账号的 `notes` 和当前 OAuth 状态。
 2. worker 识别到明确的 OAuth 认证失败，例如 401、`token_revoked` 或 `invalid_token`。
    403、429、网络错误和普通业务错误不会被误判为 401。
 3. Dashboard 的“自动重新授权”已启用，即 `PLAYWRIGHT_ENABLED=true`，并且运行环境包含
    可用的 Chromium。项目镜像会提供 Chromium 和 Xvfb。
-4. 系统能取得完整、可解析的登录材料：邮箱、邮箱密码、OpenAI/GPT 密码、TOTP/2FA 密钥。
-   邮箱可来自备注，也可由 Sub2API 账号的邮箱字段回退提供。默认
-   `AUTOMATION_REQUIRE_COMPLETE_NOTES=true`，四项缺少任何一项都会进入
-   `automation_blocked`。即使某次登录没有要求邮箱验证码，严格模式仍要求邮箱密码存在。
-5. 邮箱密码确实可以登录该账号邮箱，并且至少有一种验证码读取方式可用：默认的 Outlook
-   IMAP，或启用 Outlook Webmail 兜底。IMAP 被关闭或被邮箱服务商拦截时，网页邮箱本身也必须
-   允许自动登录。
-6. OpenAI 登录密码、TOTP 密钥和邮箱地址属于同一个账号，且当前仍有效。TOTP 必须是密钥，
-   不是已经生成的 6 位或 8 位一次性验证码。
-7. OpenAI 授权页面、邮箱服务和 OAuth callback 在浏览器所在环境可访问，且没有持续的
-   CAPTCHA、Cloudflare 或其他无法由自动化处理的安全挑战。
+4. 系统能取得启动登录所需的材料：登录邮箱和 OpenAI/GPT 密码。邮箱可来自备注、Dashboard
+   的账号材料，或由 Sub2API 账号邮箱字段回退提供。默认 `AUTOMATION_REQUIRE_COMPLETE_NOTES=true`
+   现在只阻止缺少这两个启动必需字段的账号，不再要求四项全部填写。
+5. 如果 OpenAI 页面实际要求邮箱验证码，系统还需要邮箱密码，并且至少有一种验证码读取方式可用：
+   默认的 Outlook IMAP，或启用 Outlook Webmail 兜底。缺少邮箱密码时任务会在 `email_code` 阶段
+   明确停止，而不是在恢复前统一阻止。
+6. 如果 OpenAI 页面实际要求 2FA，系统还需要 TOTP/2FA 密钥。缺少密钥时任务会在 `totp` 阶段
+   明确停止。TOTP 必须是密钥，不是已经生成的 6 位或 8 位一次性验证码。
+7. OpenAI 登录密码、TOTP 密钥和邮箱地址属于同一个账号，且当前仍有效。OpenAI 授权页面、邮箱服务
+   和 OAuth callback 在浏览器所在环境可访问，且没有持续的 CAPTCHA、Cloudflare 或其他无法由自动化处理的安全挑战。
 
 安全挑战不会被绕过。遇到临时 403/429、网络问题或挑战页面时，worker 会按退避策略持续
 重试；如果上游一直要求人工挑战，任务不会被伪造为成功。
@@ -241,7 +240,20 @@ GPT密码: openai-password
 
 也支持 `mailbox.password`、`gpt.password` 和 `2fa.secret` 这类嵌套字段。JSON 必须是完整
 对象，不能在普通文字中间拼接半段 JSON。保存备注后执行 Dashboard 的“立即扫描”，即可
-查看系统是否解析出完整材料；密码和密钥不会显示在 Dashboard 或日志中。
+查看系统是否解析出材料。账号页的“自动登录材料”列会显示 `4/4 完整`、`3/4 可尝试` 或
+`缺少必填`。密码和密钥不会显示在 Dashboard 或日志中。
+
+#### 在 Dashboard 补录材料
+
+不想手动修改 Sub2API 备注时，可以在“账号”页面或恢复控制台中点击账号的“材料”按钮。四项可以
+分开填写，保存时只更新非空字段，空白字段保持原值不变。这里保存的是本服务自己的加密材料，自动
+恢复会把它和 Sub2API 备注中的材料合并使用；不会把密码或 2FA 密钥回显到页面，也不会写入恢复日志。
+
+页面中的判断含义如下：
+
+- `4/4 完整`：四项都有，遇到邮箱验证码或 2FA 时都可以继续。
+- `3/4 可尝试`：登录邮箱和 OpenAI 密码已有，浏览器可以启动；缺少的字段只有在对应页面出现时才会成为阻断原因。
+- `缺少必填`：缺少登录邮箱或 OpenAI 密码，自动浏览器不会启动。
 
 状态检查只读取 Sub2API 的账号详情接口 `/api/v1/admin/accounts/{id}`，不会调用模型，也不会发送
 `gpt-5.4` 测试请求。恢复成功后任务阶段通常会依次显示 `reauthorization`、`apply_credentials`、
@@ -342,8 +354,8 @@ docker compose logs --tail=100 recovery-worker
 
 ### 账号显示 `automation_blocked`
 
-这表示备注没有解析出完整的邮箱、邮箱密码、OpenAI 密码或 TOTP 密钥。补齐账号备注后，在
-Dashboard 执行“立即扫描”，或等待下一次扫描。
+这表示当前账号缺少启动自动授权所需的登录邮箱或 OpenAI 密码，或者上一次自动授权已经在邮箱验证码
+或 2FA 阶段明确停止。打开账号的“材料”编辑框补录缺失字段后，执行“立即扫描”或点击“重新尝试”。
 
 ### 任务显示 `security_challenge`、403 或超时
 
