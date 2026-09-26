@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 - 2026-09-26
+
+### Account recovery and enrollment
+
+- Added dashboard controls to view and edit account login materials; partial materials can be saved, and only credentials needed by the actual login flow are required.
+- Added automatic account enrollment from the dashboard, including OAuth completion and import into the selected Sub2API account.
+- Added a daily account-material scan so newly added or changed Sub2API accounts are discovered without checking each one manually.
+- Improved recovery progress and failure details for browser authorization, mailbox codes, TOTP verification, and OAuth token refresh.
+- Detects OpenAI accounts explicitly marked as deleted or disabled (`account_deactivated`) and reports that status instead of a generic authorization failure.
+- Keeps disabled accounts from being incorrectly reset by scheduled scans; added coverage for enrollment, recovery, and worker behavior.
+- Fixed overlapping account-list badges and status information in the dashboard.
+
+Validation: automated tests run in the release workflow before the GHCR image is published. Live authorization still depends on upstream account eligibility and may stop at CAPTCHA or other security challenges.
+
 ## 0.1.1 - 2026-09-18
 
 ### Prebuilt release installation
