@@ -98,6 +98,7 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .account-picker-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .pane-heading, .inspector-header, .preview-heading { align-items: flex-start; display: flex; justify-content: space-between; }
 .pane-heading { border-bottom: 1px solid var(--line); padding: 18px 18px 15px; }
+.pane-heading-actions { align-items: center; display: flex; gap: 10px; }
 .pane-heading h3, .inspector-header h3 { font-size: 16px; margin: 0 0 2px; overflow-wrap: anywhere; }
 .pane-heading .muted, .inspector-header .account-sub { font-size: 12px; }
 .pane-count { color: var(--teal-dark); font-size: 12px; font-weight: 800; padding-top: 3px; }
@@ -179,7 +180,8 @@ tr:hover td { background: var(--paper-soft); }
 .task-history { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; }
 .state.healthy { background: #e6f4ed; color: var(--green); }
-.state.auth_failed, .state.account_error, .state.failed { background: #fbeaea; color: var(--red); }
+.state.succeeded { background: #e6f4ed; color: var(--green); }
+.state.auth_failed, .state.account_error, .state.account_disabled, .state.failed { background: #fbeaea; color: var(--red); }
 .state.recovering, .state.queued, .state.running { background: #fff1e7; color: var(--orange); }
 .state.reauth_required, .state.manual_required { background: #fff7d8; color: #8a6512; }
 .state.automation_blocked, .state.skipped { background: #edf1f3; color: #5e6b73; }
@@ -195,6 +197,17 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .dialog-panel.wide { max-width: 900px; }
 .dialog-panel.compact { max-width: 430px; }
 .materials-panel { max-width: 620px; }
+.enrollment-panel { max-width: 700px; }
+.enrollment-progress { border-top: 1px solid var(--line); margin-top: 19px; padding-top: 15px; }
+.enrollment-current { align-items: flex-start; display: flex; gap: 12px; }
+.enrollment-current > div { min-width: 0; }
+.enrollment-current strong { display: block; }
+.enrollment-current p { margin-top: 3px; overflow-wrap: anywhere; }
+.enrollment-logs { list-style: none; margin: 13px 0 0; max-height: 230px; overflow: auto; padding: 0; }
+.enrollment-log { border-top: 1px solid var(--line); padding: 9px 0; }
+.enrollment-log.error { border-left: 3px solid var(--red); padding-left: 9px; }
+.enrollment-log-message { line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+.enrollment-log .log-top { justify-content: space-between; }
 .dialog-heading { align-items: flex-start; display: flex; justify-content: space-between; }
 .dialog-heading-actions { align-items: center; display: flex; gap: 12px; }
 .dialog-heading h3 { font-size: 20px; margin: 0; }
@@ -256,7 +269,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .material-status.partial { background: rgba(241, 154, 98, .15); color: var(--orange); }
 :root[data-theme="dark"] .material-status.missing { background: rgba(240, 122, 122, .15); color: var(--red); }
 :root[data-theme="dark"] .material-status.unverified { background: rgba(170, 183, 189, .15); color: #b5c1c6; }
-:root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
+:root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.account_disabled, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.waiting { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
 :root[data-theme="dark"] .state.recovering, :root[data-theme="dark"] .state.queued, :root[data-theme="dark"] .state.running, :root[data-theme="dark"] .state.observed, :root[data-theme="dark"] .timeline-step.running .timeline-marker { background: rgba(241, 154, 98, .15); border-color: rgba(241, 154, 98, .42); }
@@ -313,6 +326,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
   .settings-form { padding: 0 16px 16px; }
   .settings-fields { grid-template-columns: 1fr; }
   .materials-grid { grid-template-columns: 1fr; }
+  .pane-heading-actions { align-items: flex-end; flex-direction: column; gap: 5px; }
   .profiles-bar { margin: 0 16px; }
   .profiles-controls { justify-content: stretch; }
   .profiles-controls select { flex-basis: 100%; width: 100%; }

@@ -91,6 +91,52 @@ def test_account_materials_can_be_saved_partially_without_exposing_secrets(setti
         assert b"gpt-pass" not in open(settings.database_path, "rb").read()
 
 
+def test_new_account_enrollment_keeps_login_materials_private(settings):
+    settings.playwright_enabled = True
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = client.post(
+            "/api/v1/account-enrollments",
+            headers=headers,
+            json={
+                "email": "owner@example.com",
+                "email_password": "mail-secret",
+                "openai_password": "openai-secret",
+                "totp_secret": "totp-secret",
+            },
+        )
+
+        assert response.status_code == 202
+        enrollment_id = response.json()["id"]
+        assert response.json()["status"] == "queued"
+        assert "mail-secret" not in response.text
+        assert "openai-secret" not in response.text
+        assert "totp-secret" not in response.text
+
+        status = client.get(f"/api/v1/account-enrollments/{enrollment_id}", headers=headers)
+        assert status.status_code == 200
+        assert "materials" not in status.json()
+        assert "auth_url" not in status.json()
+        raw_database = open(settings.database_path, "rb").read()
+        assert b"mail-secret" not in raw_database
+        assert b"openai-secret" not in raw_database
+        assert b"totp-secret" not in raw_database
+
+
+def test_new_account_enrollment_requires_browser_automation_to_be_enabled(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        response = client.post(
+            "/api/v1/account-enrollments",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+            json={"email": "owner@example.com", "openai_password": "openai-secret"},
+        )
+
+        assert response.status_code == 409
+        assert "启用浏览器自动授权" in response.json()["detail"]
+
+
 def test_unchecked_account_materials_are_not_reported_as_missing(settings):
     with TestClient(create_app(settings)) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})

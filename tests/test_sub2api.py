@@ -30,6 +30,32 @@ def test_apply_credentials_uses_admin_key_and_current_payload(settings):
     assert captured["json"]["credentials"]["refresh_token"] == "rotated"
 
 
+def test_create_account_posts_openai_oauth_credentials_to_admin_api(settings):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["json"] = __import__("json").loads(request.content)
+        return httpx.Response(200, json={"code": 0, "data": {"id": 292, "name": "owner@example.com"}})
+
+    client = Sub2APIClient(settings, transport=httpx.MockTransport(handler))
+    payload = {
+        "name": "owner@example.com",
+        "platform": "openai",
+        "type": "oauth",
+        "credentials": {"access_token": "access", "refresh_token": "refresh"},
+        "extra": {"email": "owner@example.com"},
+    }
+    try:
+        result = client.create_account(payload)
+    finally:
+        client.close()
+
+    assert result["id"] == 292
+    assert captured == {"method": "POST", "path": "/api/v1/admin/accounts", "json": payload}
+
+
 def test_account_status_check_reads_401_from_account_detail(settings):
     captured = {}
 

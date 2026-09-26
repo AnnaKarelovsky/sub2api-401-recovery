@@ -1,6 +1,6 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
@@ -10,7 +10,7 @@ const RECOVERY_FLOW = [
   { key: "credentials", label: "读取账号材料", stages: ["sync"], description: "读取备注和加密凭据，敏感值不会显示在页面。" },
   { key: "native_refresh", label: "尝试原生刷新", stages: ["native_refresh"], description: "优先调用 Sub2API 原生 OAuth 刷新。" },
   { key: "refresh_token", label: "刷新 OAuth 令牌", stages: ["refresh_token"], description: "原生刷新未完成时，使用本地刷新令牌继续恢复。" },
-  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
+  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp", "account_disabled"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
   { key: "callback", label: "接收回调并建立会话", stages: ["callback", "token_exchange", "reauthorization"], description: "校验 OAuth 回调和 PKCE 后交换会话令牌。" },
   { key: "apply", label: "写回原账号凭据", stages: ["apply_credentials"], description: "将新 OAuth 凭据写回原 Sub2API 账号 ID。" },
   { key: "verify", label: "恢复并验证状态", stages: ["status_check", "recover_state", "succeeded"], description: "清理错误状态，恢复可调度性并再次检查账号。" },
@@ -54,8 +54,13 @@ async function api(path, options = {}) {
 function setLoggedIn(value) {
   $("#login-view").classList.toggle("hidden", value);
   $("#app-view").classList.toggle("hidden", !value);
-  if (value) startDashboardRefresh();
-  else stopDashboardRefresh();
+  if (value) {
+    startDashboardRefresh();
+    if (state.accountEnrollmentId) startAccountEnrollmentPolling();
+  } else {
+    stopDashboardRefresh();
+    stopAccountEnrollmentPolling();
+  }
 }
 
 function logout() {
@@ -63,6 +68,7 @@ function logout() {
   localStorage.removeItem("recovery_token");
   stopTaskDialogRefresh();
   stopSelectedTaskRefresh();
+  stopAccountEnrollmentPolling();
   setLoggedIn(false);
 }
 
@@ -85,7 +91,7 @@ function stopDashboardRefresh() {
 }
 
 function stateBadge(value) {
-  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
   return `<span class="state ${escapeHtml(value || "unknown")}">${escapeHtml(text)}</span>`;
 }
 
@@ -109,7 +115,7 @@ function materialStatus(account) {
 }
 
 function accountStatusLabel(value) {
-  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", observed: "需关注", unknown: "未知" }[value] || value || "未知";
 }
 
 function escapeHtml(value) {
@@ -136,10 +142,17 @@ const STAGE_LABELS = {
   openai_password: "提交 OpenAI 密码",
   email_code: "获取邮箱验证码",
   totp: "提交验证器代码",
+  account_disabled: "OpenAI 账号已删除或停用",
   credentials: "准备自动登录材料",
   oauth_flow: "OAuth 页面交互",
   callback: "接收 OAuth 回调",
   token_exchange: "交换 OAuth 会话",
+  identity_check: "确认账号身份",
+  duplicate_check: "检查账号重复",
+  create_account: "创建 Sub2API 账号",
+  completed: "已完成",
+  starting: "准备开始",
+  recovered_after_restart: "服务重启后重新排队",
   reauthorization: "重新授权",
   apply_credentials: "写回凭据",
   status_check: "恢复后验证",
@@ -152,7 +165,7 @@ const STAGE_LABELS = {
 
 const STATUS_LABELS = { queued: "排队中", running: "执行中", manual_required: "等待授权", succeeded: "成功", failed: "失败", skipped: "已跳过", retry_wait: "等待重试" };
 const ACCOUNT_SORT_LABELS = { account: "账号", id: "Sub2API ID", status: "状态", materials: "自动登录材料", credentials: "凭据", last_401: "最近 401" };
-const ACCOUNT_STATUS_ORDER = { account_error: 0, auth_failed: 1, reauth_required: 2, automation_blocked: 3, recovering: 4, observed: 5, healthy: 6, unknown: 99 };
+const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, observed: 6, healthy: 7, unknown: 99 };
 const LOG_LEVEL_LABELS = { INFO: "记录", ERROR: "错误", WARNING: "警告" };
 const TECHNICAL_LABELS = {
   status_code: "HTTP 状态码",
@@ -238,6 +251,10 @@ function humanizeLogMessage(log) {
     "Waiting for the OAuth callback": "正在等待 OAuth 回调。",
     "OAuth callback received": "已收到 OAuth 回调。",
     "OAuth callback received; exchanging the authorization code": "已收到 OAuth 回调，正在交换授权码。",
+    "Waiting for the OpenAI security challenge": "登录页要求安全验证，正在等待验证完成。",
+    "Security challenge cleared": "安全验证已完成，继续登录。",
+    "OAuth security challenge did not clear before timeout": "安全验证未能在等待时间内完成。",
+    "OAuth page requires a security challenge that automation cannot complete": "登录页出现当前自动流程无法完成的安全验证。",
     "OAuth session received and encrypted credentials stored": "已建立 OAuth 会话并加密保存凭据。",
     "OAuth authorization completed; queued credential application": "OAuth 授权已完成，凭据写回任务已排队。",
     "Account note does not contain complete automation credentials": "账号备注缺少自动登录所需信息，自动恢复已暂停。",
@@ -279,6 +296,16 @@ function humanizeLogMessage(log) {
     return summaries[log.stage] || "该步骤未完成，请查看技术详情。";
   }
   return message || "已记录一个处理事件。";
+}
+
+function humanizeEnrollmentMessage(message, stage = "") {
+  const value = String(message || "");
+  if (value.startsWith("mailbox code retrieval failed:")) return `无法读取邮箱验证码：${value.slice("mailbox code retrieval failed:".length).trim()}`;
+  if (value === "OpenAI password was rejected") return "OpenAI 密码被拒绝，请核对填写的密码。";
+  if (value === "account email was rejected") return "登录邮箱被拒绝，请核对填写的邮箱。";
+  if (value === "email mailbox password is not configured for this account") return "登录流程要求邮箱验证码，但没有填写邮箱密码。";
+  if (value === "2FA secret is not configured for this account") return "登录流程要求 2FA 验证，但没有填写 2FA 密钥。";
+  return humanizeLogMessage({ message: value, stage, level: "INFO" });
 }
 
 function taskErrorSummary(task) {
@@ -420,7 +447,7 @@ function accountName(account) {
 }
 
 function accountPriority(account) {
-  const priority = { account_error: 0, auth_failed: 1, reauth_required: 2, recovering: 3, automation_blocked: 4, observed: 5, healthy: 6, unknown: 99 };
+  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, observed: 6, healthy: 7, unknown: 99 };
   return priority[account.status] ?? 99;
 }
 
@@ -538,13 +565,18 @@ function renderRecoveryInspector() {
   $("#recovery-account-meta").textContent = `Sub2API ID ${account.sub2api_account_id} · ${account.plan_type || "OpenAI OAuth"}`;
   $("#recovery-account-material").innerHTML = materialStatus(account);
   $("#recovery-account-state").innerHTML = stateBadge(account.status);
+  const accountDisabled = account.status === "account_disabled" || task?.stage === "account_disabled";
   const automationBlocked = account.status === "automation_blocked" || task?.stage === "automation_blocked";
   const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
-  $("#recovery-actions").innerHTML = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, automationBlocked ? "重新尝试" : "开始恢复")}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
-  $("#recovery-status-text").textContent = automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"));
+  $("#recovery-actions").innerHTML = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
+  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务")));
   $("#recovery-live-text").textContent = task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : "");
   const alert = $("#recovery-alert");
-  if (automationBlocked) {
+  if (accountDisabled) {
+    const reason = task?.error_reason || account.failure_reason || "OpenAI 返回 account_deactivated。";
+    alert.className = "inspector-alert blocked";
+    alert.innerHTML = `<strong>OpenAI 账号已删除或停用</strong><span>${escapeHtml(`${humanizeLogMessage({ message: reason })} 自动扫描不会重复尝试；确认账号已恢复后，可手动检查状态或重试恢复。`)}</span>`;
+  } else if (automationBlocked) {
     const missing = account.automation_missing || [];
     const missingText = missing.length ? `缺少：${missing.join("、")}。` : "没有读取到完整的自动登录材料。";
     const refreshInvalidated = task?.logs?.some((log) => log.message === "Your refresh token has been invalidated. Please try signing in again." || log.detail?.error_code === "refresh_token_invalidated");
@@ -760,6 +792,103 @@ async function saveMaterials() {
   }
 }
 
+function resetAccountEnrollmentForm() {
+  state.accountEnrollmentId = "";
+  localStorage.removeItem("recovery_account_enrollment");
+  stopAccountEnrollmentPolling();
+  $("#account-enrollment-form").reset();
+  $("#enrollment-fields").classList.remove("hidden");
+  $("#enrollment-progress").classList.add("hidden");
+  $("#submit-enrollment").classList.remove("hidden");
+  $("#new-enrollment").classList.add("hidden");
+  $("#enrollment-form-error").textContent = "";
+}
+
+function openAccountEnrollment() {
+  $("#account-enrollment-dialog").showModal();
+  if (state.accountEnrollmentId) {
+    $("#enrollment-fields").classList.add("hidden");
+    $("#enrollment-progress").classList.remove("hidden");
+    refreshAccountEnrollment();
+    startAccountEnrollmentPolling();
+  } else {
+    $("#enrollment-fields").classList.remove("hidden");
+    $("#enrollment-progress").classList.add("hidden");
+    $("#enrollment-form-error").textContent = "";
+  }
+}
+
+function renderAccountEnrollment(enrollment) {
+  $("#enrollment-progress").classList.remove("hidden");
+  $("#enrollment-fields").classList.add("hidden");
+  const statusLabels = { queued: "排队中", running: "执行中", succeeded: "成功", failed: "失败", skipped: "未创建" };
+  const badge = $("#enrollment-status-badge");
+  badge.className = `state ${enrollment.status || "unknown"}`;
+  badge.textContent = statusLabels[enrollment.status] || enrollment.status || "未知";
+  $("#enrollment-stage").textContent = stageLabel(enrollment.stage);
+  let message = humanizeEnrollmentMessage(enrollment.message, enrollment.stage);
+  if (enrollment.sub2api_account_id) message += `（Sub2API ID ${enrollment.sub2api_account_id}）`;
+  $("#enrollment-message").textContent = message;
+  $("#enrollment-logs").innerHTML = (enrollment.logs || []).map((log) => `<li class="enrollment-log ${String(log.level).toLowerCase() === "error" ? "error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span></div><div class="enrollment-log-message">${escapeHtml(humanizeEnrollmentMessage(log.message, log.stage))}</div></li>`).join("");
+  const terminal = ["succeeded", "failed", "skipped"].includes(enrollment.status);
+  $("#submit-enrollment").classList.add("hidden");
+  $("#submit-enrollment").disabled = false;
+  $("#new-enrollment").classList.toggle("hidden", !terminal);
+}
+
+async function refreshAccountEnrollment() {
+  if (!state.accountEnrollmentId || !state.token) return;
+  try {
+    const enrollment = await api(`/api/v1/account-enrollments/${encodeURIComponent(state.accountEnrollmentId)}`);
+    renderAccountEnrollment(enrollment);
+    if (["succeeded", "failed", "skipped"].includes(enrollment.status)) {
+      stopAccountEnrollmentPolling();
+      if (enrollment.status === "succeeded") await loadAll();
+    }
+  } catch (error) {
+    $("#enrollment-message").textContent = error.message;
+  }
+}
+
+function startAccountEnrollmentPolling() {
+  if (!state.accountEnrollmentId || state.accountEnrollmentTimer) return;
+  refreshAccountEnrollment();
+  state.accountEnrollmentTimer = window.setInterval(refreshAccountEnrollment, 2000);
+}
+
+function stopAccountEnrollmentPolling() {
+  if (!state.accountEnrollmentTimer) return;
+  window.clearInterval(state.accountEnrollmentTimer);
+  state.accountEnrollmentTimer = null;
+}
+
+async function submitAccountEnrollment(event) {
+  event.preventDefault();
+  const submit = $("#submit-enrollment");
+  submit.disabled = true;
+  $("#enrollment-form-error").textContent = "";
+  const values = {
+    email: $("#enrollment-email").value.trim(),
+    name: $("#enrollment-name").value.trim(),
+    email_password: $("#enrollment-email-password").value,
+    openai_password: $("#enrollment-openai-password").value,
+    totp_secret: $("#enrollment-totp-secret").value,
+  };
+  try {
+    const enrollment = await api("/api/v1/account-enrollments", { method: "POST", body: JSON.stringify(values) });
+    state.accountEnrollmentId = enrollment.id;
+    localStorage.setItem("recovery_account_enrollment", enrollment.id);
+    $("#enrollment-email-password").value = "";
+    $("#enrollment-openai-password").value = "";
+    $("#enrollment-totp-secret").value = "";
+    renderAccountEnrollment(enrollment);
+    startAccountEnrollmentPolling();
+  } catch (error) {
+    $("#enrollment-form-error").textContent = error.message;
+    submit.disabled = false;
+  }
+}
+
 async function openReauth(accountId) {
   const session = await api(`/api/v1/accounts/${accountId}/reauthorize`, { method: "POST", body: JSON.stringify({ launch_browser: false }) });
   state.reauthSession = session;
@@ -960,6 +1089,11 @@ $("#accounts-body").addEventListener("click", (event) => { const button = event.
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#task-dialog").addEventListener("close", () => { activeTaskId = ""; stopTaskDialogRefresh(); });
 $("#complete-auth").addEventListener("click", completeReauth);
+$("#new-account-button").addEventListener("click", openAccountEnrollment);
+$("#account-enrollment-form").addEventListener("submit", submitAccountEnrollment);
+$("#new-enrollment").addEventListener("click", resetAccountEnrollmentForm);
+$("#close-enrollment").addEventListener("click", () => $("#account-enrollment-dialog").close("cancel"));
+$("#close-enrollment-icon").addEventListener("click", () => $("#account-enrollment-dialog").close("cancel"));
 $("#launch-browser").addEventListener("click", async () => { if (!state.reauthSession) return; try { await api(`/api/v1/accounts/${state.reauthSession.sub2api_account_id}/reauthorize`, { method: "POST", body: JSON.stringify({ launch_browser: true, session_id: state.reauthSession.id }) }); $("#reauth-status").textContent = "浏览器已启动，请完成验证。"; } catch (error) { $("#reauth-status").textContent = error.message; } });
 $("#cancel-materials").addEventListener("click", () => { state.materialsAccountId = ""; $("#materials-dialog").close("cancel"); });
 $("#materials-form").addEventListener("submit", async (event) => { event.preventDefault(); await saveMaterials(); });

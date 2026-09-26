@@ -55,6 +55,14 @@ class AccountMaterialsUpdate(BaseModel):
     totp_secret: str = Field(default="", max_length=500)
 
 
+class AccountEnrollmentCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    email_password: str = Field(default="", max_length=1000)
+    openai_password: str = Field(min_length=1, max_length=1000)
+    totp_secret: str = Field(default="", max_length=500)
+    name: str = Field(default="", max_length=120)
+
+
 class DashboardSettingsUpdate(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     clear_secrets: list[str] = Field(default_factory=list)
@@ -305,6 +313,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if status_filter:
             items = [item for item in items if item.get("status") == status_filter]
         return {"items": items, "total": len(items)}
+
+    @app.post("/api/v1/account-enrollments", status_code=202)
+    def create_account_enrollment(
+        payload: AccountEnrollmentCreate,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        if not rt.settings.playwright_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="请先在运行配置中启用浏览器自动授权。",
+            )
+        try:
+            return rt.coordinator.enqueue_account_enrollment(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/account-enrollments/{enrollment_id}")
+    def account_enrollment_status(
+        enrollment_id: str,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        enrollment = rt.db.get_account_enrollment(enrollment_id)
+        if not enrollment:
+            raise HTTPException(status_code=404, detail="新增账号任务不存在")
+        return enrollment
 
     @app.get("/api/v1/accounts/{account_id}")
     def account_detail(

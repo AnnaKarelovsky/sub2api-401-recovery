@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -19,7 +20,7 @@ from .config import Settings
 from .mailbox import ImapCodeReader, MailboxError
 from .note_credentials import NoteCredentials
 from .redaction import safe_error
-from .totp import totp_code
+from .totp import TOTPError, totp_code
 
 
 class AutomaticBrowserError(RuntimeError):
@@ -128,6 +129,8 @@ class AutomaticOAuthRunner:
                             page = context.new_page()
                             callback_urls: list[str] = []
                             security_failures: list[str] = []
+                            auth_responses: list[str] = []
+                            mfa_denials: list[tuple[int, str]] = []
 
                             def capture_callback(frame: Any) -> None:
                                 if frame == page.main_frame and self._is_callback(frame.url):
@@ -135,6 +138,14 @@ class AutomaticOAuthRunner:
 
                             def capture_security_response(response: Any) -> None:
                                 parsed = urlparse(str(response.url))
+                                summary = self._auth_response_summary(response)
+                                if summary:
+                                    auth_responses.append(summary)
+                                    del auth_responses[:-4]
+                                if parsed.path == "/api/accounts/mfa/verify" and response.status >= 400:
+                                    mfa_denials.append(
+                                        (int(response.status), self._safe_auth_error_category(int(response.status)))
+                                    )
                                 if response.status not in {403, 429}:
                                     return
                                 if parsed.path == "/api/accounts/authorize/continue":
@@ -155,21 +166,13 @@ class AutomaticOAuthRunner:
                                 started_at,
                                 security_failures,
                                 on_stage=on_stage,
+                                auth_responses=auth_responses,
+                                mfa_denials=mfa_denials,
                             )
                             return self._wait_for_callback(page, callback_urls, on_stage=on_stage)
                         finally:
                             if browser_owned:
-                                try:
-                                    browser.close()
-                                finally:
-                                    if browser_process is not None and browser_process.poll() is None:
-                                        browser_process.terminate()
-                                        try:
-                                            browser_process.wait(timeout=5)
-                                        except subprocess.TimeoutExpired:
-                                            browser_process.kill()
-                                    if browser_data_dir:
-                                        shutil.rmtree(browser_data_dir, ignore_errors=True)
+                                self._cleanup_managed_browser(browser, browser_process, browser_data_dir)
                 except AutomaticBrowserError:
                     raise
                 except Exception as exc:
@@ -184,20 +187,52 @@ class AutomaticOAuthRunner:
         started_at: datetime,
         security_failures: list[str] | None = None,
         on_stage: Callable[[str, str], None] | None = None,
+        auth_responses: list[str] | None = None,
+        mfa_denials: list[tuple[int, str]] | None = None,
     ) -> None:
         email_submitted = False
         password_submitted = False
         email_code_used = False
-        totp_used = False
-        for _ in range(24):
+        email_code_submitted_at = 0.0
+        totp_submitted_code = ""
+        totp_submitted_at = 0.0
+        totp_retry_count = 0
+        otp_kind = ""
+        last_action_signature: tuple[str, str] | None = None
+        last_action_started_at = 0.0
+        last_action_stage = "oauth_flow"
+        deadline = time.monotonic() + self.settings.playwright_timeout_seconds
+        last_page_signature: tuple[str, str] | None = None
+        last_page_changed_at = time.monotonic()
+        while time.monotonic() < deadline:
             if self._is_callback(page.url):
                 return
+            body = self._body_text(page).lower()
+            if self._is_account_disabled(body):
+                raise AutomaticBrowserError(
+                    "OpenAI 账号已被删除或停用（account_deactivated）",
+                    stage="account_disabled",
+                    retryable=False,
+                )
+            if mfa_denials:
+                # Let an error-page navigation finish before classifying a generic MFA 403.
+                for _ in range(4):
+                    page.wait_for_timeout(250)
+                    body = self._body_text(page).lower()
+                    if self._is_account_disabled(body):
+                        raise AutomaticBrowserError(
+                            "OpenAI 账号已被删除或停用（account_deactivated）",
+                            stage="account_disabled",
+                            retryable=False,
+                        )
+                status, category = mfa_denials[-1]
+                message, retryable = self._mfa_denial_reason(category, status=status)
+                raise AutomaticBrowserError(message, stage="totp", retryable=retryable)
             if self._is_challenge(page):
                 self._wait_through_challenge(page, on_stage=on_stage)
                 continue
             if security_failures:
                 raise AutomaticBrowserError(security_failures[-1], stage="security_challenge", retryable=True)
-            body = self._body_text(page).lower()
             if self._is_security_error(body):
                 raise AutomaticBrowserError(
                     "OAuth page requires a security challenge that automation cannot complete",
@@ -209,6 +244,29 @@ class AutomaticOAuthRunner:
             if _contains_any(body, ("invalid email", "email is not valid", "account not found")):
                 raise AutomaticBrowserError("account email was rejected", stage="email", retryable=False)
 
+            page_url = urlparse(page.url)._replace(query="", fragment="").geturl()
+            page_signature = (page_url, re.sub(r"\d+", "#", body))
+            if page_signature != last_page_signature:
+                last_page_signature = page_signature
+                last_page_changed_at = time.monotonic()
+            elif time.monotonic() - last_page_changed_at >= 30:
+                stage = last_action_stage if last_action_stage in {
+                    "email", "openai_password", "email_code", "totp"
+                } else "oauth_flow"
+                label = {
+                    "email": "account email",
+                    "openai_password": "password",
+                    "email_code": "email verification code",
+                    "totp": "authenticator code",
+                    "oauth_flow": "OAuth authorization page",
+                }[stage]
+                raise AutomaticBrowserError(
+                    f"OpenAI page made no progress after submitting the {label} "
+                    f"({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                    stage=stage,
+                    retryable=True,
+                )
+
             if self._has_visible_input(
                 page,
                 (
@@ -218,8 +276,14 @@ class AutomaticOAuthRunner:
                     "input[type='tel']",
                 ),
             ):
-                if _contains_any(body, ("authenticator", "two-factor", "2fa", "verification app")):
-                    if not totp_used:
+                is_totp_prompt = _contains_any(
+                    body,
+                    ("authenticator", "two-factor", "2fa", "verification app"),
+                ) or (otp_kind == "totp" and not _contains_any(body, ("email", "inbox", "mailbox")))
+                is_email_prompt = _contains_any(body, ("email", "inbox", "mailbox", "sent you a code"))
+                if is_totp_prompt:
+                    otp_kind = "totp"
+                    if not totp_submitted_code:
                         if not material.totp_secret:
                             raise AutomaticBrowserError(
                                 "2FA secret is not configured for this account",
@@ -227,10 +291,48 @@ class AutomaticOAuthRunner:
                                 retryable=False,
                             )
                         self._notify(on_stage, "totp", "Generating and submitting the authenticator code")
-                        self._fill_code(page, totp_code(material.totp_secret), stage="totp")
-                        totp_used = True
+                        try:
+                            totp_submitted_code = totp_code(material.totp_secret)
+                        except TOTPError as exc:
+                            raise AutomaticBrowserError(
+                                f"2FA secret is invalid: {safe_error(exc)}",
+                                stage="totp",
+                                retryable=False,
+                            ) from exc
+                        self._fill_code(page, totp_submitted_code, stage="totp")
+                        last_action_signature = (page.url, body)
+                        last_action_started_at = time.monotonic()
+                        last_action_stage = "totp"
                         self._click_action(page)
+                        totp_submitted_at = time.monotonic()
+                    elif self._is_verification_code_rejected(body):
+                        if totp_retry_count >= 1:
+                            raise AutomaticBrowserError(
+                                "OpenAI rejected the authenticator code twice; verify the 2FA secret and server clock",
+                                stage="totp",
+                                retryable=False,
+                            )
+                        self._notify(on_stage, "totp", "Authenticator code was rejected; retrying once with a fresh code")
+                        totp_submitted_code = self._fresh_totp_code(
+                            material.totp_secret,
+                            totp_submitted_code,
+                            page,
+                        )
+                        self._fill_code(page, totp_submitted_code, stage="totp")
+                        last_action_signature = (page.url, body)
+                        last_action_started_at = time.monotonic()
+                        last_action_stage = "totp"
+                        self._click_action(page)
+                        totp_submitted_at = time.monotonic()
+                        totp_retry_count += 1
+                    elif time.monotonic() - totp_submitted_at >= 15:
+                        raise AutomaticBrowserError(
+                            "OpenAI did not advance after the authenticator code was submitted",
+                            stage="totp",
+                            retryable=True,
+                        )
                 elif not email_code_used:
+                    otp_kind = "email"
                     if not material.email_password:
                         raise AutomaticBrowserError(
                             "email mailbox password is not configured for this account",
@@ -241,8 +343,26 @@ class AutomaticOAuthRunner:
                     code = self._mail_code(context, material, started_at, on_stage=on_stage)
                     self._fill_code(page, code, stage="email_code")
                     email_code_used = True
+                    email_code_submitted_at = time.monotonic()
                     self._notify(on_stage, "email_code", "Email verification code received and submitted")
+                    last_action_signature = (page.url, body)
+                    last_action_started_at = time.monotonic()
+                    last_action_stage = "email_code"
                     self._click_action(page)
+                elif self._is_verification_code_rejected(body):
+                    raise AutomaticBrowserError(
+                        "OpenAI rejected the email verification code",
+                        stage="email_code",
+                        retryable=False,
+                    )
+                elif time.monotonic() - email_code_submitted_at >= 15:
+                    raise AutomaticBrowserError(
+                        "OpenAI did not advance after the email verification code was submitted",
+                        stage="email_code",
+                        retryable=True,
+                    )
+                elif is_email_prompt:
+                    otp_kind = "email"
                 page.wait_for_timeout(800)
                 continue
 
@@ -257,6 +377,9 @@ class AutomaticOAuthRunner:
                     self._notify(on_stage, "email", "Submitting the account email")
                     email_input.fill(material.email)
                     email_submitted = True
+                    last_action_signature = (page.url, body)
+                    last_action_started_at = time.monotonic()
+                    last_action_stage = "email"
                     self._click_action(page)
                     page.wait_for_timeout(800)
                     continue
@@ -267,17 +390,75 @@ class AutomaticOAuthRunner:
                     self._notify(on_stage, "openai_password", "Submitting the OpenAI account password")
                     password_input.fill(material.openai_password)
                     password_submitted = True
+                    last_action_signature = (page.url, body)
+                    last_action_started_at = time.monotonic()
+                    last_action_stage = "openai_password"
                     self._click_action(page)
                     page.wait_for_timeout(1000)
                     continue
 
+            action_signature = (page.url, body)
+            if action_signature == last_action_signature:
+                if time.monotonic() - last_action_started_at >= 12:
+                    messages = {
+                        "email": ("OpenAI did not advance after the account email was submitted", "email"),
+                        "openai_password": ("OpenAI did not advance after the password was submitted", "openai_password"),
+                        "email_code": ("OpenAI did not advance after the email verification code was submitted", "email_code"),
+                        "oauth_flow": ("OpenAI authorization page did not advance after Continue was submitted", "oauth_flow"),
+                    }
+                    message, stage = messages.get(last_action_stage, messages["oauth_flow"])
+                    raise AutomaticBrowserError(message, stage=stage, retryable=True)
+                page.wait_for_timeout(500)
+                continue
+
             if self._click_consent_or_continue(page):
+                last_action_signature = action_signature
+                last_action_started_at = time.monotonic()
+                last_action_stage = "oauth_flow"
                 self._notify(on_stage, "oauth_flow", "Submitting the OAuth consent or continue step")
                 page.wait_for_timeout(900)
                 continue
             page.wait_for_timeout(1000)
 
-        raise AutomaticBrowserError("OAuth page did not reach callback", stage="oauth_flow", retryable=True)
+        raise AutomaticBrowserError(
+            "OAuth login flow exceeded its configured timeout before reaching the callback",
+            stage=last_action_stage,
+            retryable=True,
+        )
+
+    @staticmethod
+    def _is_verification_code_rejected(body: str) -> bool:
+        return _contains_any(
+            body,
+            (
+                "incorrect code",
+                "invalid code",
+                "wrong code",
+                "code is incorrect",
+                "code is invalid",
+                "code has expired",
+                "code expired",
+                "verification code is not valid",
+                "invalid verification code",
+                "verification code was invalid",
+                "that code didn't work",
+                "that code did not work",
+            ),
+        )
+
+    def _fresh_totp_code(self, secret: str, previous_code: str, page: Any) -> str:
+        deadline = time.monotonic() + 35
+        while time.monotonic() < deadline:
+            code = totp_code(secret)
+            if code != previous_code:
+                return code
+            wait_ms = max(250, int((30 - time.time() % 30 + 0.25) * 1000))
+            page.wait_for_timeout(wait_ms)
+        raise AutomaticBrowserError(
+            "Could not generate a fresh authenticator code",
+            stage="totp",
+            retryable=True,
+        )
 
     def _mail_code(
         self,
@@ -573,6 +754,30 @@ class AutomaticOAuthRunner:
         )
 
     @staticmethod
+    def _is_account_disabled(body: str) -> bool:
+        body = body.lower()
+        return _contains_any(
+            body,
+            (
+                "account_deactivated",
+                "account_disabled",
+                "account_deleted",
+                "account has been deleted or disabled",
+                "account has been deleted or deactivated",
+                "account is disabled",
+                "account is deactivated",
+                "该帐户已被删除或停用",
+                "该账户已被删除或停用",
+                "账号已被删除或停用",
+                "帐户已被删除或停用",
+                "账户已被删除或停用",
+                "账号已停用",
+                "帐户已停用",
+                "账户已停用",
+            ),
+        )
+
+    @staticmethod
     def _first_visible(page: Any, selectors: tuple[str, ...]) -> Any | None:
         for selector in selectors:
             locator = page.locator(selector)
@@ -609,7 +814,37 @@ class AutomaticOAuthRunner:
 
     @staticmethod
     def _click_action(page: Any) -> bool:
-        return AutomaticOAuthRunner._click_matching(page, ("continue", "next", "verify", "submit", "sign in", "log in"))
+        if AutomaticOAuthRunner._click_matching(
+            page,
+            ("continue", "next", "verify", "submit", "sign in", "log in", "confirm", "proceed"),
+        ):
+            return True
+        field = AutomaticOAuthRunner._first_visible(
+            page,
+            (
+                "input[type='email']",
+                "input[autocomplete='username']",
+                "input[type='password']",
+                "input[autocomplete='one-time-code']",
+                "input[inputmode='numeric']",
+                "input[name*='code' i]",
+                "input[type='tel']",
+            ),
+        )
+        if field is None:
+            return False
+        submit = AutomaticOAuthRunner._first_visible(
+            page,
+            ("button[type='submit']", "input[type='submit']"),
+        )
+        try:
+            if submit is not None:
+                submit.click(force=True, timeout=3000)
+            else:
+                field.press("Enter", timeout=3000)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _click_consent_or_continue(page: Any) -> bool:
@@ -620,7 +855,7 @@ class AutomaticOAuthRunner:
 
     @staticmethod
     def _click_matching(page: Any, words: tuple[str, ...]) -> bool:
-        for selector in ("button", "input[type='submit']"):
+        for selector in ("button", "[role='button']", "input[type='submit']", "a[href]"):
             locator = page.locator(selector)
             for index in range(locator.count()):
                 candidate = locator.nth(index)
@@ -629,13 +864,163 @@ class AutomaticOAuthRunner:
                         continue
                 except Exception:
                     continue
-                label = " ".join(
-                    filter(None, (candidate.inner_text(), candidate.get_attribute("aria-label"), candidate.get_attribute("value")))
-                ).lower()
+                try:
+                    label = " ".join(
+                        filter(
+                            None,
+                            (
+                                candidate.inner_text(),
+                                candidate.get_attribute("aria-label"),
+                                candidate.get_attribute("value"),
+                            ),
+                        )
+                    ).lower()
+                except Exception:
+                    continue
                 if any(word in label for word in words):
                     candidate.click(force=True, timeout=3000)
                     return True
         return False
+
+    @staticmethod
+    def _page_diagnostic(page: Any, *, auth_responses: list[str] | None = None) -> str:
+        try:
+            path = AutomaticOAuthRunner._safe_auth_path(urlparse(str(page.url)).path or "/")
+        except Exception:
+            path = "/unknown"
+        controls = {
+            "email": ("input[type='email']", "input[autocomplete='username']"),
+            "password": ("input[type='password']",),
+            "code": (
+                "input[autocomplete='one-time-code']",
+                "input[inputmode='numeric']",
+                "input[name*='code' i]",
+                "input[type='tel']",
+            ),
+            "button": ("button",),
+            "role_button": ("[role='button']",),
+            "submit": ("input[type='submit']", "button[type='submit']"),
+            "link": ("a[href]",),
+        }
+        states = []
+        for name, selectors in controls.items():
+            visible = any(
+                AutomaticOAuthRunner._first_visible(page, (selector,)) is not None
+                for selector in selectors
+            )
+            states.append(f"{name}={'yes' if visible else 'no'}")
+        link_actions = AutomaticOAuthRunner._visible_link_actions(page)
+        states.append(f"link_actions={'+'.join(link_actions) if link_actions else 'none'}")
+        recent_responses = ",".join(auth_responses[-8:]) if auth_responses else "none"
+        return f"path={path}; " + ", ".join(states) + f"; auth_responses={recent_responses}"
+
+    @staticmethod
+    def _safe_auth_path(path: str) -> str:
+        path = re.sub(r"(?i)(?<=/)[0-9a-f]{10,}(?=/|$)", "[id]", path)
+        return re.sub(r"(?<=/)\d{6,}(?=/|$)", "[id]", path)
+
+    @staticmethod
+    def _auth_response_summary(response: Any) -> str | None:
+        try:
+            parsed = urlparse(str(response.url))
+            hostname = parsed.hostname or ""
+            if hostname != "openai.com" and not hostname.endswith(".openai.com"):
+                return None
+            path = AutomaticOAuthRunner._safe_auth_path(parsed.path)
+            if not path.startswith(("/api/", "/mfa-challenge/")):
+                return None
+            request = getattr(response, "request", None)
+            method = str(getattr(request, "method", "GET")).upper()
+            category = AutomaticOAuthRunner._safe_auth_error_category(int(response.status))
+            suffix = f" category={category}" if category else ""
+            return f"{method} {path} HTTP {response.status}{suffix}"
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_auth_error_category(status: int) -> str | None:
+        if status < 400:
+            return None
+        if status == 429:
+            return "rate_limited"
+        if status == 403:
+            return "access_denied"
+        return "unclassified"
+
+    @staticmethod
+    def _mfa_denial_reason(category: str, *, status: int = 403) -> tuple[str, bool]:
+        if category == "rate_limited":
+            return f"OpenAI rate-limited MFA verification (HTTP {status}); the account will be retried automatically later.", True
+        if category == "access_denied":
+            return (
+                f"OpenAI denied the MFA verification request (HTTP {status}). "
+                "Check the 2FA setup and account security requirements.",
+                False,
+            )
+        return (
+            f"OpenAI MFA verification returned HTTP {status} with an unclassified denial. "
+            "Check the 2FA setup and account security requirements.",
+            False,
+        )
+
+    @staticmethod
+    def _cleanup_managed_browser(
+        browser: Any,
+        browser_process: subprocess.Popen[Any] | None,
+        browser_data_dir: str | None,
+    ) -> None:
+        if browser_process is not None:
+            try:
+                if browser_process.poll() is None:
+                    browser_process.terminate()
+                try:
+                    browser_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    browser_process.kill()
+                    try:
+                        browser_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+            except OSError:
+                pass
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+        if browser_data_dir:
+            shutil.rmtree(browser_data_dir, ignore_errors=True)
+
+    @staticmethod
+    def _visible_link_actions(page: Any) -> list[str]:
+        actions: set[str] = set()
+        locator = page.locator("a[href]")
+        for index in range(locator.count()):
+            candidate = locator.nth(index)
+            try:
+                if not candidate.is_visible(timeout=1000):
+                    continue
+                label = " ".join(
+                    filter(
+                        None,
+                        (candidate.inner_text(), candidate.get_attribute("aria-label")),
+                    )
+                ).lower()
+            except Exception:
+                continue
+            if _contains_any(label, ("try another", "another method", "different method", "use a different")):
+                actions.add("alternate_method")
+            elif "resend" in label:
+                actions.add("resend")
+            elif _contains_any(label, ("forgot", "reset password")):
+                actions.add("password_recovery")
+            elif _contains_any(label, ("continue", "verify", "submit", "authorize", "approve", "proceed")):
+                actions.add("continue")
+            elif _contains_any(label, ("back", "cancel")):
+                actions.add("back")
+            else:
+                actions.add("unclassified")
+        return sorted(actions)
 
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:

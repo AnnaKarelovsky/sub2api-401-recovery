@@ -29,11 +29,20 @@ class RecoveryWorker:
         recovered = self.coordinator.db.requeue_stale_tasks(
             stale_after_seconds=self.settings.worker_stale_seconds
         )
+        recovered_enrollments = self.coordinator.db.requeue_stale_account_enrollments(
+            stale_after_seconds=self.settings.worker_stale_seconds
+        )
         if recovered:
             self.coordinator.db.record_event(
                 "stale_tasks_requeued",
                 "Recovery tasks abandoned by a previous worker were requeued",
                 {"count": recovered},
+            )
+        if recovered_enrollments:
+            self.coordinator.db.record_event(
+                "stale_enrollments_requeued",
+                "Account enrollment requests abandoned by a previous worker were requeued",
+                {"count": recovered_enrollments},
             )
         while not self.stop_event.is_set():
             self._reload_settings_if_changed()
@@ -62,7 +71,15 @@ class RecoveryWorker:
                     )
                     self.last_material_sync_date = self._local_now().date()
                     self.material_sync_retry_at = 0.0
-            processed = False
+            try:
+                processed = self.coordinator.process_one_account_enrollment()
+            except Exception as exc:
+                processed = False
+                self.coordinator.db.record_event(
+                    "worker_enrollment_error",
+                    "Account enrollment worker failed",
+                    {"reason": safe_error(exc)},
+                )
             for _ in range(10):
                 try:
                     if not self.coordinator.process_one(self.worker_id):

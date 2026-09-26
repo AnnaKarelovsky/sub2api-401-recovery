@@ -138,6 +138,39 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_oauth_sessions_state
                         ON oauth_sessions(state, status, expires_at);
 
+                    CREATE TABLE IF NOT EXISTS account_enrollments (
+                        id TEXT PRIMARY KEY,
+                        email TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        stage TEXT NOT NULL DEFAULT 'queued',
+                        message TEXT NOT NULL DEFAULT '',
+                        auth_url TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        code_verifier_encrypted TEXT NOT NULL,
+                        materials_encrypted TEXT NOT NULL,
+                        sub2api_account_id INTEGER,
+                        error_reason TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        started_at TEXT,
+                        finished_at TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_account_enrollments_queue
+                        ON account_enrollments(status, created_at);
+
+                    CREATE TABLE IF NOT EXISTS account_enrollment_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        enrollment_id TEXT NOT NULL,
+                        level TEXT NOT NULL,
+                        stage TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(enrollment_id) REFERENCES account_enrollments(id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_account_enrollment_logs
+                        ON account_enrollment_logs(enrollment_id, id);
+
                     CREATE TABLE IF NOT EXISTS account_locks (
                         sub2api_account_id INTEGER PRIMARY KEY,
                         lock_token TEXT NOT NULL,
@@ -851,6 +884,176 @@ class Database:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM oauth_sessions WHERE id=?", (session_id,)).fetchone()
         return dict(row) if row else None
+
+    def create_account_enrollment(self, enrollment: dict[str, Any]) -> None:
+        now = utc_now()
+        materials = self.secret_box.encrypt_json(enrollment["materials"])
+        verifier = self.secret_box.encrypt(str(enrollment["code_verifier"]))
+        message = "新增账号请求已排队，等待自动授权。"
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute(
+                "SELECT id FROM account_enrollments WHERE lower(email)=lower(?) "
+                "AND status IN ('queued', 'running') LIMIT 1",
+                (enrollment["email"],),
+            ).fetchone()
+            if active:
+                conn.rollback()
+                raise ValueError("该邮箱已有一个新增账号任务正在处理")
+            conn.execute(
+                """
+                INSERT INTO account_enrollments(
+                    id, email, name, auth_url, state, code_verifier_encrypted,
+                    materials_encrypted, message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    enrollment["id"], enrollment["email"], enrollment["name"],
+                    enrollment["auth_url"], enrollment["state"], verifier,
+                    materials, message, now, now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_enrollment_logs(enrollment_id, level, stage, message, created_at)
+                VALUES (?, 'INFO', 'queued', ?, ?)
+                """,
+                (enrollment["id"], message, now),
+            )
+            conn.commit()
+
+    def claim_next_account_enrollment(self) -> dict[str, Any] | None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM account_enrollments WHERE status='queued' ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            message = "正在准备自动授权流程。"
+            conn.execute(
+                """
+                UPDATE account_enrollments SET status='running', stage='starting',
+                    message=?, started_at=?, updated_at=? WHERE id=? AND status='queued'
+                """,
+                (message, now, now, row["id"]),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_enrollment_logs(enrollment_id, level, stage, message, created_at)
+                VALUES (?, 'INFO', 'starting', ?, ?)
+                """,
+                (row["id"], message, now),
+            )
+            conn.commit()
+            claimed = dict(row)
+        claimed["code_verifier"] = self.secret_box.decrypt(claimed.pop("code_verifier_encrypted")) or ""
+        claimed["materials"] = self.secret_box.decrypt_json(claimed.pop("materials_encrypted"))
+        return claimed
+
+    def requeue_stale_account_enrollments(self, *, stale_after_seconds: int = 1800) -> int:
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=max(60, stale_after_seconds))).isoformat(timespec="seconds")
+        stamp = now.isoformat(timespec="seconds")
+        message = "服务重启后重新排队；原 OAuth 登录流程已结束。"
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id FROM account_enrollments WHERE status='running' AND updated_at < ?",
+                (cutoff,),
+            ).fetchall()
+            if rows:
+                conn.execute(
+                    """
+                    UPDATE account_enrollments SET status='queued', stage='recovered_after_restart',
+                        message=?, updated_at=?, started_at=NULL
+                    WHERE status='running' AND updated_at < ?
+                    """,
+                    (message, stamp, cutoff),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO account_enrollment_logs(enrollment_id, level, stage, message, created_at)
+                    VALUES (?, 'WARNING', 'recovered_after_restart', ?, ?)
+                    """,
+                    [(str(row["id"]), message, stamp) for row in rows],
+                )
+            conn.commit()
+        return len(rows)
+
+    def update_account_enrollment_stage(
+        self, enrollment_id: str, *, stage: str, message: str, level: str = "INFO"
+    ) -> None:
+        safe = safe_message(message)
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE account_enrollments SET stage=?, message=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (stage, safe, now, enrollment_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_enrollment_logs(enrollment_id, level, stage, message, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (enrollment_id, level, stage, safe, now),
+            )
+
+    def finish_account_enrollment(
+        self,
+        enrollment_id: str,
+        *,
+        status: str,
+        stage: str,
+        message: str,
+        error_reason: str | None = None,
+        sub2api_account_id: int | None = None,
+    ) -> None:
+        safe = safe_message(message)
+        error = safe_message(error_reason) if error_reason else None
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_enrollments SET status=?, stage=?, message=?, error_reason=?,
+                    sub2api_account_id=?, auth_url='', state='', code_verifier_encrypted='',
+                    materials_encrypted='', updated_at=?, finished_at=? WHERE id=?
+                """,
+                (status, stage, safe, error, sub2api_account_id, now, now, enrollment_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_enrollment_logs(enrollment_id, level, stage, message, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (enrollment_id, "ERROR" if status == "failed" else "INFO", stage, safe, now),
+            )
+
+    def get_account_enrollment(self, enrollment_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, email, name, status, stage, message, sub2api_account_id,
+                    error_reason, created_at, updated_at, started_at, finished_at
+                FROM account_enrollments WHERE id=?
+                """,
+                (enrollment_id,),
+            ).fetchone()
+            if not row:
+                return None
+            logs = conn.execute(
+                """
+                SELECT level, stage, message, created_at FROM account_enrollment_logs
+                WHERE enrollment_id=? ORDER BY id LIMIT 200
+                """,
+                (enrollment_id,),
+            ).fetchall()
+        result = dict(row)
+        result["logs"] = [dict(log) for log in logs]
+        return result
 
     def get_oauth_session_by_state(self, state: str) -> dict[str, Any] | None:
         with self.connect() as conn:

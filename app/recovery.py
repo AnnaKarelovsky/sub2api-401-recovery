@@ -92,9 +92,15 @@ class RecoveryCoordinator:
                 merged_credentials.update(local_credentials)
                 classification_snapshot["credentials"] = merged_credentials
                 classification = classify_account_snapshot(classification_snapshot)
+                if current.get("status") == "account_disabled":
+                    continue
                 if classification and classification.category == FailureClass.AUTH_FAILURE:
                     auth_failures += 1
                     try:
+                        previous_material = self._material_from_credentials(
+                            local_credentials,
+                            str(current.get("email") or ""),
+                        )
                         material = self._sync_note_material(int(account_id), raw)
                     except Sub2APIError as exc:
                         self.db.record_event(
@@ -109,6 +115,8 @@ class RecoveryCoordinator:
                             classification,
                             _automation_block_reason(material),
                         )
+                        continue
+                    if self._suppress_unchanged_blocked_retry(current, previous_material, material):
                         continue
                     task_id, created = self.enqueue_recovery(
                         int(account_id),
@@ -159,6 +167,10 @@ class RecoveryCoordinator:
                         )
                         if probe_is_auth:
                             auth_failures += 1
+                            previous_material = self._material_from_credentials(
+                                local_credentials,
+                                str(current.get("email") or ""),
+                            )
                             material = self._sync_note_material(int(account_id), {})
                             if self.settings.automation_require_complete_notes and not material.ready_for_automation:
                                 self._block_automation(
@@ -166,6 +178,8 @@ class RecoveryCoordinator:
                                     probe.classification,
                                     _automation_block_reason(material),
                                 )
+                                continue
+                            if self._suppress_unchanged_blocked_retry(current, previous_material, material):
                                 continue
                             task_id, created = self.enqueue_recovery(
                                 int(account_id),
@@ -275,6 +289,196 @@ class RecoveryCoordinator:
             mark_401=bool(classification and classification.category == FailureClass.AUTH_FAILURE),
         )
         return task_id, created
+
+    def enqueue_account_enrollment(
+        self,
+        *,
+        email: str,
+        email_password: str,
+        openai_password: str,
+        totp_secret: str = "",
+        name: str = "",
+    ) -> dict[str, Any]:
+        normalized_email = email.strip().lower()
+        if "@" not in normalized_email or len(normalized_email) > 320:
+            raise ValueError("登录邮箱格式无效")
+        if not openai_password.strip():
+            raise ValueError("OpenAI 密码不能为空")
+        pkce = generate_pkce()
+        enrollment_id = str(uuid.uuid4())
+        display_name = name.strip() or normalized_email
+        self.db.create_account_enrollment(
+            {
+                "id": enrollment_id,
+                "email": normalized_email,
+                "name": display_name,
+                "auth_url": build_authorization_url(self.settings, pkce),
+                "state": pkce.state,
+                "code_verifier": pkce.code_verifier,
+                "materials": NoteCredentials(
+                    email=normalized_email,
+                    email_password=email_password,
+                    openai_password=openai_password,
+                    totp_secret=totp_secret,
+                ).as_dict(),
+            }
+        )
+        return self.db.get_account_enrollment(enrollment_id) or {}
+
+    def process_one_account_enrollment(self) -> bool:
+        enrollment = self.db.claim_next_account_enrollment()
+        if not enrollment:
+            return False
+        self.execute_account_enrollment(enrollment)
+        return True
+
+    def execute_account_enrollment(self, enrollment: dict[str, Any]) -> None:
+        enrollment_id = str(enrollment["id"])
+        email = str(enrollment["email"]).strip().lower()
+        display_name = str(enrollment["name"])
+        current_stage = "starting"
+
+        def on_stage(stage: str, message: str) -> None:
+            nonlocal current_stage
+            current_stage = stage
+            self.db.update_account_enrollment_stage(
+                enrollment_id, stage=stage, message=message
+            )
+
+        def fail(stage: str, reason: str, *, skipped: bool = False) -> None:
+            self.db.finish_account_enrollment(
+                enrollment_id,
+                status="skipped" if skipped else "failed",
+                stage=stage,
+                message=reason,
+                error_reason=None if skipped else reason,
+            )
+
+        try:
+            if not self.settings.playwright_enabled:
+                fail("browser", "未启用浏览器自动授权，请在运行配置中启用后重新提交。")
+                return
+            material_values = enrollment.get("materials") or {}
+            material = self._material_from_credentials(material_values, email)
+            on_stage("credentials", "已读取加密保存的登录材料；邮箱验证码和 2FA 将按登录页要求使用。")
+            started_at = datetime.now(timezone.utc)
+            on_stage("browser", "正在启动 OpenAI OAuth 自动登录。")
+            callback_url = self.automatic_browser.run(
+                str(enrollment["auth_url"]),
+                material,
+                started_at=started_at,
+                on_stage=on_stage,
+            )
+            on_stage("callback", "已收到 OAuth 回调，正在校验 state。")
+            parsed_callback = urllib.parse.urlparse(callback_url)
+            callback_query = urllib.parse.parse_qs(parsed_callback.query)
+            callback_state = _first(callback_query, "state")
+            if not callback_state or not hmac_compare(callback_state, str(enrollment["state"])):
+                fail("callback", "OAuth state 校验失败，未创建账号。")
+                return
+            callback_error = _first(callback_query, "error")
+            if callback_error:
+                description = _first(callback_query, "error_description")
+                reason = safe_error(description or callback_error)
+                fail("callback", f"OpenAI OAuth 授权未完成：{reason}")
+                return
+            code = _first(callback_query, "code")
+            if not code:
+                fail("callback", "OAuth 回调中没有授权码，未创建账号。")
+                return
+            verifier = str(enrollment.get("code_verifier") or "")
+            if not verifier:
+                fail("token_exchange", "PKCE 校验器不可用，未创建账号。")
+                return
+
+            on_stage("token_exchange", "正在使用 PKCE 授权码交换 OAuth 凭据。")
+            token_set = self.oauth.exchange_code(
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=self.settings.openai_oauth_redirect_uri,
+            )
+            on_stage("identity_check", "正在确认 OAuth 返回的邮箱与填写邮箱一致。")
+            if not token_set.refresh_token:
+                fail("token_exchange", "OAuth 响应没有 refresh token，未创建账号。")
+                return
+            returned_email = token_set.email.strip().lower()
+            if not returned_email or returned_email != email:
+                fail(
+                    "identity_check",
+                    "OAuth 返回的邮箱与填写邮箱不一致或为空，已阻止创建错误账号。",
+                )
+                return
+
+            on_stage("duplicate_check", "正在检查 Sub2API 中是否已有相同邮箱的账号。")
+            remote_accounts = self.sub2api.list_accounts()
+            for remote in remote_accounts:
+                credentials = remote.get("credentials") if isinstance(remote.get("credentials"), dict) else {}
+                remote_email = str(remote.get("email") or credentials.get("email") or "").strip().lower()
+                if remote_email == email:
+                    remote_id = normalize_snapshot(remote).get("sub2api_account_id")
+                    fail(
+                        "duplicate_check",
+                        f"Sub2API 已存在该邮箱账号（ID {remote_id or '未知'}），未重复创建。",
+                        skipped=True,
+                    )
+                    return
+
+            on_stage("create_account", "OAuth 已验证，正在向 Sub2API 创建新账号。")
+            credentials = token_set.as_credentials()
+            created = self.sub2api.create_account(
+                {
+                    "name": display_name,
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": credentials,
+                    "extra": _credential_extra(token_set),
+                }
+            )
+            account_data = created.get("account") if isinstance(created.get("account"), dict) else created
+            account_id = normalize_snapshot(account_data).get("sub2api_account_id")
+            if not account_id:
+                matches = self.sub2api.list_accounts()
+                for remote in matches:
+                    remote_credentials = remote.get("credentials") if isinstance(remote.get("credentials"), dict) else {}
+                    remote_email = str(remote.get("email") or remote_credentials.get("email") or "").strip().lower()
+                    if remote_email == email:
+                        account_id = normalize_snapshot(remote).get("sub2api_account_id")
+                        account_data = remote
+                        break
+            if not account_id:
+                fail(
+                    "create_account",
+                    "Sub2API 已返回创建结果，但没有找到新账号 ID；请执行一次账号扫描确认是否已创建。",
+                )
+                return
+
+            snapshot = dict(account_data)
+            snapshot.setdefault("id", account_id)
+            snapshot.setdefault("name", display_name)
+            snapshot.setdefault("email", email)
+            snapshot.setdefault("type", "oauth")
+            self.db.upsert_account_snapshot(normalize_snapshot(snapshot))
+            self.db.save_credentials(
+                int(account_id), credentials, email=email, username=display_name
+            )
+            if material.as_dict():
+                self.db.save_account_material(int(account_id), material.as_dict())
+            self.db.mark_materials_checked(int(account_id))
+            self.db.finish_account_enrollment(
+                enrollment_id,
+                status="succeeded",
+                stage="completed",
+                message=f"账号已创建并同步到 Sub2API，ID {account_id}。",
+                sub2api_account_id=int(account_id),
+            )
+        except AutomaticBrowserError as exc:
+            fail(exc.stage, safe_error(exc))
+        except OAuthError as exc:
+            fail("token_exchange", safe_error(exc))
+        except Sub2APIError as exc:
+            fail(current_stage, safe_error(exc))
+        except Exception as exc:
+            fail(current_stage, safe_error(exc))
 
     def process_one(self, worker_id: str) -> bool:
         task = self.db.claim_next_task(worker_id)
@@ -533,6 +737,14 @@ class RecoveryCoordinator:
             totp_secret=str(credentials.get("totp_secret") or ""),
         )
 
+    @staticmethod
+    def _suppress_unchanged_blocked_retry(
+        current: dict[str, Any],
+        previous: NoteCredentials,
+        latest: NoteCredentials,
+    ) -> bool:
+        return current.get("status") == "automation_blocked" and previous == latest
+
     def _block_automation(
         self,
         account_id: int,
@@ -609,7 +821,7 @@ class RecoveryCoordinator:
         *,
         attempt: int = 1,
     ) -> None:
-        if self.settings.automation_require_complete_notes:
+        if self.settings.playwright_enabled:
             try:
                 material = self._sync_note_material(account_id, {})
                 if material.ready_for_automation:
@@ -627,6 +839,14 @@ class RecoveryCoordinator:
                     return
             except (AutomaticBrowserError, TOTPError) as exc:
                 message = safe_error(getattr(exc, "reason", exc))
+                account_disabled = (
+                    isinstance(exc, AutomaticBrowserError) and exc.stage == "account_disabled"
+                )
+                final_classification = (
+                    Classification(FailureClass.ACCOUNT_ERROR, message, False)
+                    if account_disabled
+                    else classification
+                )
                 session_id = self.db.get_task(task_id).get("auth_session_id") if self.db.get_task(task_id) else None
                 if session_id:
                     self.db.complete_oauth_session(str(session_id), status="failed", error_reason=message)
@@ -646,14 +866,18 @@ class RecoveryCoordinator:
                     task_id,
                     status="failed",
                     stage=getattr(exc, "stage", "automatic_reauthorization"),
-                    failure_class=classification.category.value,
+                    failure_class=final_classification.category.value,
                     error_reason=message,
                 )
                 self.db.update_account_state(
                     account_id,
-                    status="automation_blocked",
-                    failure_class=classification.category.value,
-                    failure_reason=f"Automatic reauthorization exhausted its retries: {message}",
+                    status="account_disabled" if account_disabled else "automation_blocked",
+                    failure_class=final_classification.category.value,
+                    failure_reason=(
+                        message
+                        if account_disabled
+                        else f"Automatic reauthorization exhausted its retries: {message}"
+                    ),
                 )
                 self._log(task_id, getattr(exc, "stage", "automatic_reauthorization"), message, exc)
                 return

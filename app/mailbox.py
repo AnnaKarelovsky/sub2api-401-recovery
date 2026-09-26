@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from email.header import decode_header
 from email.message import Message
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from .config import Settings
 from .redaction import safe_error
@@ -115,10 +116,41 @@ class OutlookWebCodeReader:
         deadline = time.monotonic() + (timeout_seconds or self.settings.mail_code_timeout_seconds)
         email_done = False
         password_done = False
+        body_unavailable_since: float | None = None
+        page_responses: list[str] = []
+
+        def capture_response(response: Any) -> None:
+            try:
+                parsed = urlparse(str(response.url))
+                hostname = parsed.hostname or ""
+                trusted_host = hostname in {"outlook.live.com", "login.live.com", "login.microsoftonline.com"} or hostname.endswith(
+                    (".live.com", ".office.com", ".microsoftonline.com")
+                )
+                request = getattr(response, "request", None)
+                resource_type = str(getattr(request, "resource_type", ""))
+                if not trusted_host or (resource_type != "document" and response.status < 400):
+                    return
+                path = self._safe_mail_path(parsed.path)
+                page_responses.append(f"{hostname}{path} HTTP {response.status}")
+                del page_responses[:-4]
+            except Exception:
+                return
+
         try:
+            page.on("response", capture_response)
             page.goto("https://outlook.live.com/mail/0/", wait_until="domcontentloaded", timeout=60_000)
             while time.monotonic() < deadline:
-                body = " ".join(page.locator("body").inner_text(timeout=5000).split())
+                try:
+                    body = " ".join(page.locator("body").inner_text(timeout=5000).split())
+                    body_unavailable_since = None
+                except Exception as exc:
+                    if exc.__class__.__name__ not in {"TimeoutError", "TimeoutErrorImpl"}:
+                        raise
+                    body_unavailable_since = body_unavailable_since or time.monotonic()
+                    if time.monotonic() - body_unavailable_since >= 30:
+                        raise MailboxError(self._page_unavailable_reason(page, page_responses)) from exc
+                    page.wait_for_timeout(1000)
+                    continue
                 if _looks_like_openai(body):
                     match = re.search(r"(?<!\d)(\d{6})(?!\d)", body)
                     if match:
@@ -149,6 +181,20 @@ class OutlookWebCodeReader:
             raise MailboxError(f"Outlook Webmail access failed: {safe_error(exc)}") from exc
         finally:
             page.close()
+
+    @staticmethod
+    def _safe_mail_path(path: str) -> str:
+        path = re.sub(r"(?i)(?<=/)[0-9a-f]{10,}(?=/|$)", "[id]", path)
+        return re.sub(r"(?<=/)\d{6,}(?=/|$)", "[id]", path)
+
+    @staticmethod
+    def _page_unavailable_reason(page: Any, responses: list[str]) -> str:
+        try:
+            path = OutlookWebCodeReader._safe_mail_path(urlparse(str(page.url)).path or "/")
+        except Exception:
+            path = "/unknown"
+        recent = ",".join(responses[-4:]) if responses else "none"
+        return f"Outlook Webmail page did not load content (path={path}; responses={recent})"
 
 
 def _looks_like_openai(text: str) -> bool:

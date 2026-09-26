@@ -132,6 +132,16 @@ class Sub2APIClient:
         )
         return data if isinstance(data, dict) else {}
 
+    def create_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/api/v1/admin/accounts",
+            operation="create_account",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        return data if isinstance(data, dict) else {}
+
     def export_account_credentials(self, account_id: int) -> dict[str, Any] | None:
         data = self._request(
             "GET",
