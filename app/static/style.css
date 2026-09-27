@@ -182,6 +182,7 @@ tr:hover td { background: var(--paper-soft); }
 .state.healthy { background: #e6f4ed; color: var(--green); }
 .state.succeeded { background: #e6f4ed; color: var(--green); }
 .state.auth_failed, .state.account_error, .state.account_disabled, .state.failed { background: #fbeaea; color: var(--red); }
+.state.account_replaced { background: #e5f1f5; color: #176b78; }
 .state.recovering, .state.queued, .state.running { background: #fff1e7; color: var(--orange); }
 .state.reauth_required, .state.manual_required { background: #fff7d8; color: #8a6512; }
 .state.automation_blocked, .state.skipped { background: #edf1f3; color: #5e6b73; }
@@ -270,6 +271,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .material-status.missing { background: rgba(240, 122, 122, .15); color: var(--red); }
 :root[data-theme="dark"] .material-status.unverified { background: rgba(170, 183, 189, .15); color: #b5c1c6; }
 :root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.account_disabled, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
+:root[data-theme="dark"] .state.account_replaced { background: rgba(91, 193, 205, .15); border-color: rgba(91, 193, 205, .42); color: #8ed9df; }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.waiting { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
 :root[data-theme="dark"] .state.recovering, :root[data-theme="dark"] .state.queued, :root[data-theme="dark"] .state.running, :root[data-theme="dark"] .state.observed, :root[data-theme="dark"] .timeline-step.running .timeline-marker { background: rgba(241, 154, 98, .15); border-color: rgba(241, 154, 98, .42); }

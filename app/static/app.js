@@ -12,6 +12,7 @@ const RECOVERY_FLOW = [
   { key: "refresh_token", label: "刷新 OAuth 令牌", stages: ["refresh_token"], description: "原生刷新未完成时，使用本地刷新令牌继续恢复。" },
   { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp", "account_disabled"], description: "按真实页面要求处理账号登录、邮箱验证码和验证器代码。" },
   { key: "callback", label: "接收回调并建立会话", stages: ["callback", "token_exchange", "reauthorization"], description: "校验 OAuth 回调和 PKCE 后交换会话令牌。" },
+  { key: "identity_change", label: "处理账号身份变化", stages: ["identity_change", "account_replaced"], description: "OAuth 身份发生变化，保留原账号并创建或复用新的 Sub2API 账号。" },
   { key: "apply", label: "写回原账号凭据", stages: ["apply_credentials"], description: "将新 OAuth 凭据写回原 Sub2API 账号 ID。" },
   { key: "verify", label: "恢复并验证状态", stages: ["status_check", "recover_state", "succeeded"], description: "清理错误状态，恢复可调度性并再次检查账号。" },
 ];
@@ -91,7 +92,7 @@ function stopDashboardRefresh() {
 }
 
 function stateBadge(value) {
-  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
   return `<span class="state ${escapeHtml(value || "unknown")}">${escapeHtml(text)}</span>`;
 }
 
@@ -115,7 +116,7 @@ function materialStatus(account) {
 }
 
 function accountStatusLabel(value) {
-  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", observed: "需关注", unknown: "未知" }[value] || value || "未知";
 }
 
 function escapeHtml(value) {
@@ -143,6 +144,7 @@ const STAGE_LABELS = {
   email_code: "获取邮箱验证码",
   totp: "提交验证器代码",
   account_disabled: "OpenAI 账号已删除或停用",
+  identity_change: "账号身份变化",
   credentials: "准备自动登录材料",
   oauth_flow: "OAuth 页面交互",
   callback: "接收 OAuth 回调",
@@ -151,6 +153,7 @@ const STAGE_LABELS = {
   duplicate_check: "检查账号重复",
   create_account: "创建 Sub2API 账号",
   completed: "已完成",
+  account_replaced: "已创建新账号",
   starting: "准备开始",
   recovered_after_restart: "服务重启后重新排队",
   reauthorization: "重新授权",
@@ -165,7 +168,7 @@ const STAGE_LABELS = {
 
 const STATUS_LABELS = { queued: "排队中", running: "执行中", manual_required: "等待授权", succeeded: "成功", failed: "失败", skipped: "已跳过", retry_wait: "等待重试" };
 const ACCOUNT_SORT_LABELS = { account: "账号", id: "Sub2API ID", status: "状态", materials: "自动登录材料", credentials: "凭据", last_401: "最近 401" };
-const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, observed: 6, healthy: 7, unknown: 99 };
+const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, account_replaced: 6, observed: 7, healthy: 8, unknown: 99 };
 const LOG_LEVEL_LABELS = { INFO: "记录", ERROR: "错误", WARNING: "警告" };
 const TECHNICAL_LABELS = {
   status_code: "HTTP 状态码",
@@ -274,6 +277,9 @@ function humanizeLogMessage(log) {
   if (message.startsWith("Recovery will retry")) return "遇到临时问题，任务将按退避策略自动重试。";
   if (message.startsWith("Detected an OAuth authentication failure")) return "发现 OAuth 认证失败，已创建恢复任务。";
   if (message.startsWith("Account test detected an OAuth authentication failure")) return "状态检查发现 OAuth 认证失败，已创建恢复任务。";
+  if (message.startsWith("OAuth identity changed; created replacement Sub2API account")) return `账号身份已变化，已创建新 Sub2API 账号：${message.slice("OAuth identity changed; created replacement Sub2API account".length).trim()}。`;
+  if (message === "OAuth identity changed; creating a new Sub2API account") return "检测到 OpenAI 账号身份变化，正在创建新的 Sub2API 账号。";
+  if (message === "Replacement OAuth identity already exists; reusing that Sub2API account") return "新的 OAuth 身份已存在，正在复用对应的 Sub2API 账号。";
   if (log.level === "ERROR") {
     const summaries = {
       native_refresh: "原生刷新未完成，系统正在尝试其他恢复方式。",
@@ -447,7 +453,7 @@ function accountName(account) {
 }
 
 function accountPriority(account) {
-  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, observed: 6, healthy: 7, unknown: 99 };
+  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, account_replaced: 6, observed: 7, healthy: 8, unknown: 99 };
   return priority[account.status] ?? 99;
 }
 
@@ -566,16 +572,22 @@ function renderRecoveryInspector() {
   $("#recovery-account-material").innerHTML = materialStatus(account);
   $("#recovery-account-state").innerHTML = stateBadge(account.status);
   const accountDisabled = account.status === "account_disabled" || task?.stage === "account_disabled";
+  const accountReplaced = account.status === "account_replaced" || task?.stage === "account_replaced";
   const automationBlocked = account.status === "automation_blocked" || task?.stage === "automation_blocked";
   const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
-  $("#recovery-actions").innerHTML = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
-  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务")));
+  const standardActions = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}`;
+  $("#recovery-actions").innerHTML = `${accountReplaced ? "" : standardActions}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
+  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"))));
   $("#recovery-live-text").textContent = task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : "");
   const alert = $("#recovery-alert");
   if (accountDisabled) {
     const reason = task?.error_reason || account.failure_reason || "OpenAI 返回 account_deactivated。";
     alert.className = "inspector-alert blocked";
     alert.innerHTML = `<strong>OpenAI 账号已删除或停用</strong><span>${escapeHtml(`${humanizeLogMessage({ message: reason })} 自动扫描不会重复尝试；确认账号已恢复后，可手动检查状态或重试恢复。`)}</span>`;
+  } else if (accountReplaced) {
+    const replacementLog = task?.logs?.find((log) => log.stage === "account_replaced");
+    alert.className = "inspector-alert waiting";
+    alert.innerHTML = `<strong>OpenAI 身份已变化</strong><span>${escapeHtml(replacementLog ? humanizeLogMessage(replacementLog) : "已保留原账号，并创建新的 Sub2API 账号。")}</span>`;
   } else if (automationBlocked) {
     const missing = account.automation_missing || [];
     const missingText = missing.length ? `缺少：${missing.join("、")}。` : "没有读取到完整的自动登录材料。";

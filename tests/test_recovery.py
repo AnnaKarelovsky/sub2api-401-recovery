@@ -33,6 +33,24 @@ class FakeSub2API:
         return {}
 
 
+class ReplacementSub2API(FakeSub2API):
+    def __init__(self):
+        super().__init__()
+        self.created = []
+        self.disabled = []
+
+    def list_accounts(self):
+        return []
+
+    def create_account(self, payload):
+        self.created.append(payload)
+        return {"id": 42, "name": payload["name"], "email": payload["credentials"]["email"], "type": "oauth"}
+
+    def set_schedulable(self, account_id, schedulable=True):
+        self.disabled.append((account_id, schedulable))
+        return {}
+
+
 class ScanSub2API(FakeSub2API):
     def __init__(self):
         super().__init__()
@@ -96,6 +114,23 @@ class FakeOAuth:
 class ReauthOAuth:
     def refresh_token(self, refresh_token, previous=None):
         raise OAuthError("invalid_grant", error_code="invalid_grant", reauth_required=True)
+
+
+class ReplacementOAuth:
+    def exchange_code(self, *, code, code_verifier, redirect_uri):
+        assert code == "authorization-code"
+        assert code_verifier
+        assert redirect_uri
+        return TokenSet(
+            access_token="replacement-access",
+            refresh_token="replacement-refresh",
+            id_token="",
+            expires_at=1890000000,
+            expires_in=3600,
+            client_id="client",
+            email="demo@example.com",
+            chatgpt_account_id="acct-new",
+        )
 
 
 def test_scan_reconciles_local_accounts_with_remote_accounts(database, settings):
@@ -360,6 +395,71 @@ def test_invalid_grant_creates_manual_authorization_session(database, settings):
     error_log = next(log for log in database.list_logs(task_id) if log["level"] == "ERROR")
     assert error_log["detail"]["error_code"] == "invalid_grant"
     assert error_log["detail"]["reauthorization_required"] is True
+
+
+def test_oauth_identity_change_creates_replacement_account(database, settings):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 7, "email": "demo@example.com", "username": "team", "status": "auth_failed"}
+    )
+    database.save_credentials(
+        7,
+        {
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "chatgpt_account_id": "acct-old",
+            "email": "demo@example.com",
+            "email_password": "mail-secret",
+            "openai_password": "gpt-secret",
+            "totp_secret": "totp-secret",
+        },
+    )
+    task_id, _ = database.create_task(7, trigger="test")
+    sub2api = ReplacementSub2API()
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, sub2api, ReplacementOAuth(), settings))
+    session = coordinator.start_reauthorization(7, task_id=task_id)
+    callback_state = database.get_oauth_session(session["id"])["state"]
+
+    result = coordinator.complete_authorization(
+        session_id=session["id"],
+        callback_url=f"http://localhost:1455/auth/callback?code=authorization-code&state={callback_state}",
+    )
+
+    assert result["status"] == "replaced"
+    assert result["replacement_account_id"] == 42
+    assert sub2api.disabled == [(7, False)]
+    assert len(sub2api.created) == 1
+    assert sub2api.created[0]["credentials"]["refresh_token"] == "replacement-refresh"
+    assert database.get_task(task_id)["status"] == "succeeded"
+    assert database.get_task(task_id)["stage"] == "account_replaced"
+    assert database.get_mapping(7)["status"] == "account_replaced"
+    assert database.get_mapping(42)["status"] == "unknown"
+    replacement_credentials = database.load_credentials(42)
+    assert replacement_credentials["refresh_token"] == "replacement-refresh"
+    assert replacement_credentials["email_password"] == "mail-secret"
+    assert database.get_oauth_session(session["id"])["status"] == "completed"
+
+
+def test_scan_does_not_retry_replaced_account(database, settings):
+    settings.scan_probe_active_accounts = False
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 7, "email": "present@example.com", "status": "active"}
+    )
+    database.update_account_state(
+        7,
+        status="account_replaced",
+        failure_class="ACCOUNT_ERROR",
+        failure_reason="replacement account created",
+    )
+    sub2api = AuthFailureScanSub2API(
+        "邮箱: present@example.com\n邮箱密码: mail-pass\nOpenAI密码: gpt-pass\n2FA密钥: JBSWY3DPEHPK3PXP"
+    )
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, sub2api, FakeOAuth(), settings))
+
+    result = coordinator.scan()
+
+    assert result["queued"] == 0
+    assert database.list_tasks(limit=10) == []
+    assert database.get_mapping(7)["status"] == "account_replaced"
 
 
 def test_completed_oauth_session_applies_credentials_before_status_check(database, settings):

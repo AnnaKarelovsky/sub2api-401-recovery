@@ -92,7 +92,7 @@ class RecoveryCoordinator:
                 merged_credentials.update(local_credentials)
                 classification_snapshot["credentials"] = merged_credentials
                 classification = classify_account_snapshot(classification_snapshot)
-                if current.get("status") == "account_disabled":
+                if current.get("status") in {"account_disabled", "account_replaced"}:
                     continue
                 if classification and classification.category == FailureClass.AUTH_FAILURE:
                     auth_failures += 1
@@ -917,6 +917,7 @@ class RecoveryCoordinator:
                 "Refresh token is not usable; administrator action is required",
                 {"session_id": session["id"]},
             )
+
         except Exception as exc:
             self.db.finish_task(
                 task_id,
@@ -925,6 +926,121 @@ class RecoveryCoordinator:
                 failure_class=classification.category.value,
                 error_reason=safe_error(exc),
             )
+
+    @staticmethod
+    def _remote_chatgpt_account_id(account: dict[str, Any]) -> str:
+        for source in (
+            account,
+            account.get("credentials") if isinstance(account.get("credentials"), dict) else {},
+            account.get("extra") if isinstance(account.get("extra"), dict) else {},
+        ):
+            value = source.get("chatgpt_account_id")
+            if value:
+                return str(value)
+        return ""
+
+    def _create_replacement_account(
+        self,
+        *,
+        task_id: str,
+        account_id: int,
+        existing: dict[str, Any],
+        token_set: TokenSet,
+    ) -> int:
+        """Create or reuse a Sub2API account when OAuth returns a new identity."""
+        mapping = self.db.get_mapping(account_id) or {}
+        expected_email = str(existing.get("email") or mapping.get("email") or "").strip().lower()
+        returned_email = token_set.email.strip().lower()
+        if not returned_email or (expected_email and returned_email != expected_email):
+            raise RecoveryFailure(
+                "OAuth returned a different or unavailable email; the replacement account was not created"
+            )
+        if not token_set.chatgpt_account_id:
+            raise RecoveryFailure(
+                "OAuth returned no ChatGPT account identity; the replacement account was not created"
+            )
+
+        remote_accounts = self.sub2api.list_accounts()
+        replacement = next(
+            (
+                account
+                for account in remote_accounts
+                if self._remote_chatgpt_account_id(account) == token_set.chatgpt_account_id
+            ),
+            None,
+        )
+        replacement_name = str(mapping.get("username") or returned_email or f"account-{account_id}")
+        replacement_name = f"{replacement_name} [recovered]"
+        if replacement is None:
+            self._log(
+                task_id,
+                "identity_change",
+                "OAuth identity changed; creating a new Sub2API account",
+            )
+            replacement = self.sub2api.create_account(
+                {
+                    "name": replacement_name,
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": token_set.as_credentials(),
+                    "extra": _credential_extra(token_set),
+                }
+            )
+        else:
+            self._log(
+                task_id,
+                "identity_change",
+                "Replacement OAuth identity already exists; reusing that Sub2API account",
+            )
+
+        account_data = replacement.get("account") if isinstance(replacement.get("account"), dict) else replacement
+        replacement_id = normalize_snapshot(account_data).get("sub2api_account_id")
+        if not replacement_id:
+            for remote in self.sub2api.list_accounts():
+                if self._remote_chatgpt_account_id(remote) == token_set.chatgpt_account_id:
+                    replacement_id = normalize_snapshot(remote).get("sub2api_account_id")
+                    account_data = remote
+                    break
+        if not replacement_id or int(replacement_id) == account_id:
+            raise RecoveryFailure(
+                "Sub2API did not return a distinct replacement account ID; the original account was not changed"
+            )
+
+        snapshot = dict(account_data) if isinstance(account_data, dict) else {}
+        snapshot.setdefault("id", replacement_id)
+        snapshot.setdefault("name", replacement_name)
+        snapshot.setdefault("email", returned_email)
+        snapshot.setdefault("type", "oauth")
+        self.db.upsert_account_snapshot(normalize_snapshot(snapshot))
+        self.db.save_credentials(
+            int(replacement_id),
+            token_set.as_credentials(),
+            email=returned_email,
+            username=str(snapshot.get("name") or replacement_name),
+        )
+        material = self._material_from_credentials(existing, expected_email or returned_email)
+        if material.as_dict():
+            self.db.save_account_material(int(replacement_id), material.as_dict())
+        self.db.mark_materials_checked(int(replacement_id))
+
+        replacement_reason = f"OAuth account identity changed; replacement Sub2API account created: {replacement_id}"
+        self.db.update_account_state(
+            account_id,
+            status="account_replaced",
+            failure_class=FailureClass.ACCOUNT_ERROR.value,
+            failure_reason=replacement_reason,
+        )
+        try:
+            self.sub2api.set_schedulable(account_id, False)
+        except Sub2APIError as exc:
+            self.db.append_log(
+                task_id,
+                level="WARNING",
+                stage="identity_change",
+                message="Replacement account was created, but the original account could not be disabled",
+                detail=_sub2api_technical_detail(exc),
+            )
+        return int(replacement_id)
 
     def _schedule_automatic_retry(
         self,
@@ -1062,10 +1178,32 @@ class RecoveryCoordinator:
             raise RecoveryFailure("OAuth response did not include refresh token")
         existing = self.db.load_credentials(int(session["sub2api_account_id"]))
         old_account_id = str(existing.get("chatgpt_account_id") or "")
-        if old_account_id and token_set.chatgpt_account_id and old_account_id != token_set.chatgpt_account_id:
-            reason = "OAuth account identity does not match the mapped Sub2API account"
-            self.db.complete_oauth_session(str(session["id"]), status="failed", error_reason=reason)
-            raise RecoveryFailure(reason)
+        if old_account_id and old_account_id != token_set.chatgpt_account_id:
+            replacement_id = self._create_replacement_account(
+                task_id=task_id,
+                account_id=int(session["sub2api_account_id"]),
+                existing=existing,
+                token_set=token_set,
+            )
+            self.db.complete_oauth_session(
+                str(session["id"]), status="completed", token_payload=token_set.as_credentials()
+            )
+            if task_id:
+                self.db.finish_task(task_id, status="succeeded", stage="account_replaced")
+                self._log(
+                    task_id,
+                    "account_replaced",
+                    f"OAuth identity changed; created replacement Sub2API account {replacement_id}",
+                )
+            return {
+                "session_id": str(session["id"]),
+                "task_id": task_id,
+                "sub2api_account_id": int(session["sub2api_account_id"]),
+                "replacement_account_id": replacement_id,
+                "status": "replaced",
+                "email": token_set.email,
+                "chatgpt_account_id": token_set.chatgpt_account_id,
+            }
         self.db.save_credentials(
             int(session["sub2api_account_id"]),
             token_set.as_credentials(),
