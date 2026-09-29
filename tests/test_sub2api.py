@@ -56,6 +56,23 @@ def test_create_account_posts_openai_oauth_credentials_to_admin_api(settings):
     assert captured == {"method": "POST", "path": "/api/v1/admin/accounts", "json": payload}
 
 
+def test_delete_account_uses_admin_delete_endpoint(settings):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        return httpx.Response(200, json={"code": 0, "message": "deleted", "data": {}})
+
+    client = Sub2APIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        client.delete_account(302)
+    finally:
+        client.close()
+
+    assert captured == {"method": "DELETE", "path": "/api/v1/admin/accounts/302"}
+
+
 def test_account_status_check_reads_401_from_account_detail(settings):
     captured = {}
 

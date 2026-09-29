@@ -1,10 +1,11 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "skipped"]);
+const DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow";
 const RECOVERY_FLOW = [
   { key: "detect", label: "确认认证异常", stages: ["scan", "probe"], description: "读取 Sub2API 返回的账号状态，确认是否需要恢复。" },
   { key: "credentials", label: "读取账号材料", stages: ["sync"], description: "读取备注和加密凭据，敏感值不会显示在页面。" },
@@ -116,7 +117,7 @@ function materialStatus(account) {
 }
 
 function accountStatusLabel(value) {
-  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", retry_wait: "等待重试", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", observed: "需关注", unknown: "未知" }[value] || value || "未知";
 }
 
 function escapeHtml(value) {
@@ -127,6 +128,12 @@ function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatCompactDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 const STAGE_LABELS = {
@@ -152,6 +159,7 @@ const STAGE_LABELS = {
   identity_check: "确认账号身份",
   duplicate_check: "检查账号重复",
   create_account: "创建 Sub2API 账号",
+  account_deleted: "人工删除 Sub2API 账号",
   completed: "已完成",
   account_replaced: "已创建新账号",
   starting: "准备开始",
@@ -168,7 +176,7 @@ const STAGE_LABELS = {
 
 const STATUS_LABELS = { queued: "排队中", running: "执行中", manual_required: "等待授权", succeeded: "成功", failed: "失败", skipped: "已跳过", retry_wait: "等待重试" };
 const ACCOUNT_SORT_LABELS = { account: "账号", id: "Sub2API ID", status: "状态", materials: "自动登录材料", credentials: "凭据", last_401: "最近 401" };
-const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, account_replaced: 6, observed: 7, healthy: 8, unknown: 99 };
+const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, observed: 8, healthy: 9, unknown: 99 };
 const LOG_LEVEL_LABELS = { INFO: "记录", ERROR: "错误", WARNING: "警告" };
 const TECHNICAL_LABELS = {
   status_code: "HTTP 状态码",
@@ -181,6 +189,8 @@ const TECHNICAL_LABELS = {
   exception_type: "异常类型",
   backoff_seconds: "重试等待（秒）",
   raw_reason: "原始原因",
+  screenshot_saved: "页面截图已保存",
+  screenshot_error: "页面截图保存失败",
 };
 
 function stageLabel(value) {
@@ -197,7 +207,7 @@ function accountSortValue(account, key) {
     const value = Number(account.sub2api_account_id);
     return Number.isFinite(value) ? value : null;
   }
-  if (key === "status") return ACCOUNT_STATUS_ORDER[account.status] ?? 99;
+  if (key === "status") return ACCOUNT_STATUS_ORDER[accountStatusForUi(account)] ?? 99;
   if (key === "materials") return Number(account.automation_configured_count || 0);
   if (key === "credentials") return (account.has_access_token ? 2 : 0) + (account.has_refresh_token ? 1 : 0);
   if (key === "last_401") {
@@ -241,6 +251,7 @@ function humanizeLogMessage(log) {
     "Clearing Sub2API error state and restoring schedulability": "正在清理错误状态并恢复账号可用性。",
     "Automated OAuth callback completed": "自动授权回调已完成。",
     "Starting automated OAuth browser recovery": "正在启动浏览器自动授权。",
+    [DIRECT_OAUTH_401_MESSAGE]: "Sub2API 已确认 OAuth 401，跳过原生刷新和 refresh token，直接开始 OAuth 重新授权。",
     "Opening the OpenAI authorization page": "正在打开 OpenAI 授权页面。",
     "OpenAI authorization page loaded": "OpenAI 授权页面已打开。",
     "Submitting the account email": "正在提交账号邮箱。",
@@ -298,6 +309,7 @@ function humanizeLogMessage(log) {
       cloudflare_challenge: "安全验证未完成。",
       callback: "OAuth 回调未收到。",
       token_exchange: "OAuth 会话交换未完成。",
+      account_disabled: "检测到账号停用错误页，请查看页面截图核实。",
     };
     return summaries[log.stage] || "该步骤未完成，请查看技术详情。";
   }
@@ -334,6 +346,48 @@ function renderTechnicalDetails(log) {
   const entries = Object.entries(log.detail).filter(([key, value]) => TECHNICAL_LABELS[key] && value !== null && value !== undefined && value !== "");
   if (!entries.length) return "";
   return `<details class="log-technical"><summary>查看技术详情</summary><dl>${entries.map(([key, value]) => `<div><dt>${escapeHtml(TECHNICAL_LABELS[key])}</dt><dd><code>${escapeHtml(technicalValue(key, value))}</code></dd></div>`).join("")}</dl></details>`;
+}
+
+function renderTaskEvidence(log, taskId) {
+  const evidenceId = log.detail?.evidence_id;
+  if (!evidenceId) return "";
+  return `<div class="log-evidence"><button class="mini-button" type="button" data-task-evidence="${escapeHtml(taskId)}" data-evidence-id="${escapeHtml(evidenceId)}">查看页面截图</button></div>`;
+}
+
+function releaseTaskEvidencePreviews() {
+  document.querySelectorAll(".log-evidence[data-preview-url]").forEach((container) => {
+    URL.revokeObjectURL(container.dataset.previewUrl);
+    delete container.dataset.previewUrl;
+  });
+}
+
+async function toggleTaskEvidence(button) {
+  const container = button.closest(".log-evidence");
+  if (container.dataset.previewUrl) {
+    URL.revokeObjectURL(container.dataset.previewUrl);
+    delete container.dataset.previewUrl;
+    container.querySelector("img")?.remove();
+    button.textContent = "查看页面截图";
+    return;
+  }
+  button.disabled = true;
+  try {
+    const path = `/api/v1/tasks/${encodeURIComponent(button.dataset.taskEvidence)}/evidence/${encodeURIComponent(button.dataset.evidenceId)}`;
+    const response = await fetch(path, { headers: { Authorization: `Bearer ${state.token}` } });
+    if (response.status === 401) { logout(); throw new Error("登录已过期"); }
+    if (!response.ok) throw new Error("截图暂时无法加载");
+    const imageUrl = URL.createObjectURL(await response.blob());
+    const image = document.createElement("img");
+    image.src = imageUrl;
+    image.alt = "OpenAI 账号停用错误页面截图";
+    container.dataset.previewUrl = imageUrl;
+    container.append(image);
+    button.textContent = "隐藏截图";
+  } catch (error) {
+    button.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderSync(sync) {
@@ -423,6 +477,10 @@ async function loadAll() {
     const [dashboard, accounts, tasks] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80")]);
     state.accounts = accounts.items || [];
     state.tasks = tasks.items || [];
+    for (const accountId of state.selectedDisabledAccountIds) {
+      const account = state.accounts.find((item) => String(item.sub2api_account_id) === accountId);
+      if (!account || !isDeletionEligible(account)) state.selectedDisabledAccountIds.delete(accountId);
+    }
     ensureSelectedAccount();
     renderMetrics(dashboard.summary || {});
     state.lastUpdatedAt = new Date().toISOString();
@@ -444,8 +502,15 @@ async function loadAll() {
 }
 
 function renderMetrics(summary) {
-  const items = [["账号总数", summary.accounts || 0], ["401 / 待授权", summary.auth_failures || 0], ["恢复中", summary.recovering || 0], ["近 30 天成功", summary.success || 0], ["失败任务", summary.failed || 0]];
-  $("#metrics").innerHTML = items.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+  const items = [
+    ["账号总数", summary.accounts || 0],
+    ["401 / 待授权", summary.auth_failures || 0],
+    ["执行中", summary.running_tasks || 0],
+    ["等待重试", summary.retry_wait_tasks || 0, summary.next_retry_at ? `最早 ${formatCompactDate(summary.next_retry_at)}` : "暂无待重试任务"],
+    ["近 30 天成功", summary.success || 0],
+    ["失败任务", summary.failed || 0],
+  ];
+  $("#metrics").innerHTML = items.map(([label, value, detail]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div>${detail ? `<div class="metric-detail">${escapeHtml(detail)}</div>` : ""}</div>`).join("");
 }
 
 function accountName(account) {
@@ -453,8 +518,8 @@ function accountName(account) {
 }
 
 function accountPriority(account) {
-  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, account_replaced: 6, observed: 7, healthy: 8, unknown: 99 };
-  return priority[account.status] ?? 99;
+  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, observed: 8, healthy: 9, unknown: 99 };
+  return priority[accountStatusForUi(account)] ?? 99;
 }
 
 function ensureSelectedAccount() {
@@ -469,12 +534,34 @@ function latestTaskForAccount(accountId) {
     .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0] || null;
 }
 
+function accountStatusForUi(account) {
+  const task = latestTaskForAccount(account.sub2api_account_id);
+  return task?.status === "queued" && task.stage === "retry_wait" ? "retry_wait" : account.status;
+}
+
+function isDeletionEligible(account) {
+  const task = latestTaskForAccount(account.sub2api_account_id);
+  return account.status === "account_disabled" && task?.status === "failed" && task.stage === "account_disabled" && Boolean(task.has_evidence);
+}
+
+function updateDisabledAccountSelectionControls(visibleEligible = []) {
+  const count = state.selectedDisabledAccountIds.size;
+  const button = $("#delete-disabled-selected");
+  button.disabled = count === 0;
+  button.textContent = `删除已选停用账号（${count}）`;
+  const selectAll = $("#select-all-disabled");
+  const selectedVisible = visibleEligible.filter((account) => state.selectedDisabledAccountIds.has(String(account.sub2api_account_id))).length;
+  selectAll.disabled = visibleEligible.length === 0;
+  selectAll.checked = visibleEligible.length > 0 && selectedVisible === visibleEligible.length;
+  selectAll.indeterminate = selectedVisible > 0 && selectedVisible < visibleEligible.length;
+}
+
 function renderConsoleAccounts() {
   const search = $("#console-account-search").value.trim().toLowerCase();
   const filter = $("#console-account-filter").value;
   const items = state.accounts
     .filter((account) => {
-      if (filter && account.status !== filter) return false;
+      if (filter && accountStatusForUi(account) !== filter) return false;
       if (!search) return true;
       return [account.email, account.username, account.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
     })
@@ -487,20 +574,32 @@ function renderConsoleAccounts() {
     const accountId = String(account.sub2api_account_id);
     const selected = accountId === String(state.selectedAccountId);
     const task = latestTaskForAccount(accountId);
+    const retryWaiting = accountStatusForUi(account) === "retry_wait";
     const secondary = account.failure_reason || account.plan_type || "OpenAI OAuth";
-    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><span class="console-account-side-top"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}</span><span class="console-account-side-bottom">${materialStatus(account)}${stateBadge(account.status)}</span></span></button>`;
+    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><span class="console-account-side-top"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}</span><span class="console-account-side-bottom">${materialStatus(account)}${stateBadge(retryWaiting ? "retry_wait" : account.status)}${retryWaiting ? `<small class="console-account-retry-at">预计 ${escapeHtml(formatCompactDate(task.available_at))}</small>` : ""}</span></span></button>`;
   }).join("");
   list.scrollTop = scrollTop;
 }
 
+function recoveryTimelineForTask(task) {
+  const account = state.accounts.find((item) => String(item.sub2api_account_id) === String(task?.sub2api_account_id));
+  const directOAuth401 = task?.logs?.some((log) => log.message === DIRECT_OAUTH_401_MESSAGE)
+    || task?.failure_class === "401_AUTH_FAILURE"
+    || account?.failure_class === "401_AUTH_FAILURE";
+  return directOAuth401
+    ? RECOVERY_FLOW.filter((step) => !["detect", "credentials", "native_refresh", "refresh_token"].includes(step.key))
+    : RECOVERY_FLOW;
+}
+
 function timelineStageIndex(task) {
   if (!task) return -1;
-  const direct = RECOVERY_FLOW.findIndex((step) => step.stages.includes(task.stage));
+  const flow = recoveryTimelineForTask(task);
+  const direct = flow.findIndex((step) => step.stages.includes(task.stage));
   if (direct >= 0) return direct;
-  if (task.stage === "reauthorization") return RECOVERY_FLOW.findIndex((step) => step.key === "browser");
+  if (task.stage === "reauthorization") return flow.findIndex((step) => step.key === "browser");
   const logs = task.logs || [];
   for (let index = logs.length - 1; index >= 0; index -= 1) {
-    const logIndex = RECOVERY_FLOW.findIndex((step) => step.stages.includes(logs[index].stage));
+    const logIndex = flow.findIndex((step) => step.stages.includes(logs[index].stage));
     if (logIndex >= 0) return logIndex;
   }
   return ["queued", "running", "retry_wait"].includes(task.status) ? 0 : -1;
@@ -508,15 +607,17 @@ function timelineStageIndex(task) {
 
 function timelineStepStatus(step, index, task) {
   if (!task) return "pending";
+  const currentIndex = timelineStageIndex(task);
+  if (task.status === "queued" && task.stage === "retry_wait" && currentIndex === index) return "waiting";
   const relevantLogs = (task.logs || []).filter((log) => step.stages.includes(log.stage));
   if (relevantLogs.some((log) => log.stage === "automation_blocked")) return "blocked";
   const error = relevantLogs.some((log) => String(log.level || "").toUpperCase() === "ERROR");
   if (error) return "error";
-  const currentIndex = timelineStageIndex(task);
   if (currentIndex === index) {
     if (task.status === "succeeded") return "done";
     if (task.status === "failed") return "error";
     if (task.status === "skipped") return "skipped";
+    if (task.status === "queued" && task.stage === "retry_wait") return "waiting";
     return "running";
   }
   if (currentIndex > index) return relevantLogs.length ? "done" : "skipped";
@@ -525,6 +626,7 @@ function timelineStepStatus(step, index, task) {
 }
 
 function timelineStepDescription(step, status, task) {
+  if (status === "waiting") return `最近一次尝试遇到临时问题，预计 ${formatDate(task.available_at)} 自动重试。`;
   const logs = (task?.logs || []).filter((log) => step.stages.includes(log.stage));
   const latest = logs[logs.length - 1];
   if (latest) return humanizeLogMessage(latest);
@@ -535,10 +637,10 @@ function timelineStepDescription(step, status, task) {
 }
 
 function renderRecoveryTimeline(task) {
-  const markers = { done: "✓", running: "…", pending: "", skipped: "–", error: "!", blocked: "!" };
-  $("#recovery-timeline").innerHTML = RECOVERY_FLOW.map((step, index) => {
+  const markers = { done: "✓", running: "…", waiting: "↻", pending: "", skipped: "–", error: "!", blocked: "!" };
+  $("#recovery-timeline").innerHTML = recoveryTimelineForTask(task).map((step, index) => {
     const status = timelineStepStatus(step, index, task);
-    const statusLabelText = { done: "已完成", running: task?.status === "manual_required" && index === timelineStageIndex(task) ? "等待授权" : "处理中", pending: "待执行", skipped: "未需要", error: "出错", blocked: "已阻止" }[status];
+    const statusLabelText = { done: "已完成", running: task?.status === "manual_required" && index === timelineStageIndex(task) ? "等待授权" : "处理中", waiting: "等待重试", pending: "待执行", skipped: "未需要", error: "出错", blocked: "已阻止" }[status];
     return `<li class="timeline-step ${status}"><span class="timeline-marker" aria-hidden="true">${markers[status]}</span><div class="timeline-copy"><div class="timeline-title"><strong>${escapeHtml(step.label)}</strong><span>${statusLabelText}</span></div><p>${escapeHtml(timelineStepDescription(step, status, task))}</p></div></li>`;
   }).join("");
 }
@@ -577,13 +679,18 @@ function renderRecoveryInspector() {
   const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
   const standardActions = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}`;
   $("#recovery-actions").innerHTML = `${accountReplaced ? "" : standardActions}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
-  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"))));
-  $("#recovery-live-text").textContent = task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : "");
+  const retryWaiting = task?.status === "queued" && task.stage === "retry_wait";
+  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (retryWaiting ? "等待重试" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务")))));
+  $("#recovery-live-text").textContent = retryWaiting ? `预计 ${formatDate(task.available_at)} 重试` : (task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : ""));
   const alert = $("#recovery-alert");
   if (accountDisabled) {
     const reason = task?.error_reason || account.failure_reason || "OpenAI 返回 account_deactivated。";
+    const disabledLog = task?.logs?.find((log) => log.stage === "account_disabled");
+    const screenshotStatus = disabledLog?.detail?.evidence_id
+      ? "已保存错误页面截图，可在完整日志中预览。"
+      : (disabledLog?.detail?.screenshot_error ? "页面截图未能保存；可在日志技术详情中查看原因。" : "当前任务没有可预览的页面截图。");
     alert.className = "inspector-alert blocked";
-    alert.innerHTML = `<strong>OpenAI 账号已删除或停用</strong><span>${escapeHtml(`${humanizeLogMessage({ message: reason })} 自动扫描不会重复尝试；确认账号已恢复后，可手动检查状态或重试恢复。`)}</span>`;
+    alert.innerHTML = `<strong>OpenAI 账号已删除或停用</strong><span>${escapeHtml(`${humanizeLogMessage({ message: reason })} ${screenshotStatus} 自动扫描不会重复尝试；确认账号已恢复后，可手动检查状态或重试恢复。`)}</span>`;
   } else if (accountReplaced) {
     const replacementLog = task?.logs?.find((log) => log.stage === "account_replaced");
     alert.className = "inspector-alert waiting";
@@ -595,6 +702,10 @@ function renderRecoveryInspector() {
     const refreshText = refreshInvalidated ? "旧 OAuth 刷新令牌已失效，浏览器流程尚未启动。" : "";
     alert.className = "inspector-alert blocked";
     alert.innerHTML = `<strong>自动恢复未执行</strong><span>${escapeHtml(`${refreshText}${missingText}请在“编辑材料”中补齐，或更新 Sub2API 账号备注后，再点击“重新尝试”。`)}</span>`;
+  } else if (retryWaiting) {
+    const reason = task.error_reason ? humanizeLogMessage({ message: task.error_reason }) : "遇到可重试的临时问题。";
+    alert.className = "inspector-alert waiting";
+    alert.innerHTML = `<strong>任务正在等待自动重试</strong><span>${escapeHtml(`${reason} 下次尝试：${formatDate(task.available_at)}。`)}</span>`;
   } else if (waitingAuthorization) {
     const reason = task?.error_reason || account.failure_reason || "刷新令牌已失效，需要重新登录 OpenAI。";
     alert.className = "inspector-alert waiting";
@@ -642,6 +753,8 @@ function startSelectedTaskRefresh(task) {
       const latest = await api(`/api/v1/tasks/${summary.id}`);
       if (String(latest.sub2api_account_id) !== String(state.selectedAccountId)) return;
       state.selectedTask = latest;
+      const taskIndex = state.tasks.findIndex((item) => String(item.id) === String(latest.id));
+      if (taskIndex >= 0) state.tasks[taskIndex] = { ...state.tasks[taskIndex], status: latest.status, stage: latest.stage, available_at: latest.available_at };
       renderConsole();
       if (TERMINAL_TASK_STATUSES.has(latest.status)) stopSelectedTaskRefresh();
     } catch (_) {
@@ -682,11 +795,13 @@ function renderAccounts() {
   const filter = $("#account-filter").value;
   const search = $("#account-search").value.trim().toLowerCase();
   const items = state.accounts.filter((item) => {
-    if (filter && item.status !== filter) return false;
+    if (filter && accountStatusForUi(item) !== filter) return false;
     if (!search) return true;
     return [item.email, item.username, item.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
   }).sort((left, right) => compareAccountValues(left, right, state.accountSort.key, state.accountSort.direction) || compareAccountValues(left, right, "id"));
+  const visibleEligible = items.filter(isDeletionEligible);
   $("#accounts-head").innerHTML = [
+    '<th class="selection-column"><input id="select-all-disabled" type="checkbox" aria-label="全选当前显示的已确认停用账号" /></th>',
     accountSortHeader("account", ACCOUNT_SORT_LABELS.account),
     accountSortHeader("id", ACCOUNT_SORT_LABELS.id),
     accountSortHeader("status", ACCOUNT_SORT_LABELS.status),
@@ -697,15 +812,55 @@ function renderAccounts() {
   ].join("");
   $("#accounts-empty").classList.toggle("hidden", items.length > 0);
   $("#accounts-empty").textContent = state.accounts.length && !items.length ? "没有匹配账号。" : "还没有同步到 OpenAI OAuth 账号。";
-  $("#accounts-body").innerHTML = items.map((account) => `<tr>
+  $("#accounts-body").innerHTML = items.map((account) => {
+    const eligible = isDeletionEligible(account);
+    const accountId = String(account.sub2api_account_id);
+    const latestTask = latestTaskForAccount(accountId);
+    const needsScreenshotReview = account.status === "account_disabled" && latestTask?.stage === "account_disabled" && !latestTask.has_evidence;
+    return `<tr>
+    <td class="selection-column">${eligible ? `<input type="checkbox" data-delete-disabled-account="${escapeHtml(accountId)}" aria-label="选择已确认停用账号 ${escapeHtml(accountId)}" ${state.selectedDisabledAccountIds.has(accountId) ? "checked" : ""} />` : ""}</td>
     <td><div class="account-name">${escapeHtml(account.email || account.username || "未命名账号")}</div><div class="account-sub">${escapeHtml(account.failure_reason || account.plan_type || "OpenAI OAuth")}</div></td>
     <td><code>${escapeHtml(account.sub2api_account_id)}</code></td>
-    <td>${stateBadge(account.status)}</td>
+    <td>${stateBadge(accountStatusForUi(account))}${needsScreenshotReview ? '<div class="account-sub evidence-needed">需重新核验截图</div>' : ""}</td>
     <td>${materialStatus(account)}</td>
     <td><span class="account-sub">${account.has_access_token ? "AT" : "-"} / ${account.has_refresh_token ? "RT" : "-"}</span></td>
     <td>${escapeHtml(formatDate(account.last_401_at))}</td>
-    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${actionButton("recover", account.sub2api_account_id, "恢复")}${actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}</div></td>
-  </tr>`).join("");
+    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${actionButton("recover", account.sub2api_account_id, needsScreenshotReview ? "重新核验" : "恢复")}${actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}${latestTask?.stage === "account_disabled" ? actionButton("detail", latestTask.id, "诊断日志") : ""}</div></td>
+  </tr>`;
+  }).join("");
+  updateDisabledAccountSelectionControls(visibleEligible);
+}
+
+async function deleteSelectedDisabledAccounts() {
+  const accountIds = [...state.selectedDisabledAccountIds].map(Number);
+  if (!accountIds.length) return;
+  const summary = accountIds.map((id) => {
+    const account = state.accounts.find((item) => Number(item.sub2api_account_id) === id);
+    return `${account?.email || account?.username || "账号"} (#${id})`;
+  }).join("\n");
+  const confirmed = window.confirm(
+    `即将从 Sub2API 删除以下 ${accountIds.length} 个已确认停用账号：\n\n${summary}\n\n本地登录凭据会清除，恢复日志和页面截图会保留。此操作不可由本项目撤销。确定继续？`,
+  );
+  if (!confirmed) return;
+  $("#delete-disabled-selected").disabled = true;
+  $("#account-delete-status").textContent = "正在删除所选 Sub2API 账号…";
+  try {
+    const result = await api("/api/v1/accounts/disabled", {
+      method: "DELETE",
+      body: JSON.stringify({ account_ids: accountIds, confirmation: "DELETE" }),
+    });
+    state.selectedDisabledAccountIds.clear();
+    const failed = result.failed || [];
+    const deleted = result.deleted || [];
+    $("#account-delete-status").textContent = failed.length
+      ? `已删除 ${deleted.length} 个，${failed.length} 个未删除：${failed.map((item) => `#${item.account_id} ${item.reason}`).join("；")}`
+      : `已删除 ${deleted.length} 个 Sub2API 账号；本地恢复日志和截图已保留。`;
+    await loadAll();
+  } catch (error) {
+    $("#account-delete-status").textContent = `删除未完成：${error.message}`;
+  } finally {
+    updateDisabledAccountSelectionControls();
+  }
 }
 
 function renderTasks() {
@@ -927,7 +1082,8 @@ function renderTaskDetail(task) {
   $("#task-meta").innerHTML = `<span><strong>账号</strong>${escapeHtml(task.sub2api_account_id)}</span><span><strong>阶段</strong>${escapeHtml(stageLabel(task.stage))}</span><span><strong>状态</strong>${escapeHtml(statusLabel(task.status))}</span><span class="task-error"><strong>处理结果</strong>${escapeHtml(taskErrorSummary(task))}</span>`;
   const logs = $("#task-logs");
   const stickToBottom = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 32;
-  logs.innerHTML = (task.logs || []).map((log) => `<article class="log-line ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span><span>${escapeHtml(LOG_LEVEL_LABELS[log.level] || log.level || "记录")}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderTechnicalDetails(log)}</article>`).join("") || `<div class="empty">暂无日志</div>`;
+  releaseTaskEvidencePreviews();
+  logs.innerHTML = (task.logs || []).map((log) => `<article class="log-line ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span><span>${escapeHtml(LOG_LEVEL_LABELS[log.level] || log.level || "记录")}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderTechnicalDetails(log)}${renderTaskEvidence(log, task.id)}</article>`).join("") || `<div class="empty">暂无日志</div>`;
   if (stickToBottom) logs.scrollTop = logs.scrollHeight;
   $("#task-dialog-status").textContent = TERMINAL_TASK_STATUSES.has(task.status) ? "" : "自动更新中 · 每 2 秒检查";
 }
@@ -1088,6 +1244,23 @@ $("#open-selected-logs").addEventListener("click", async () => {
 });
 $("#account-search").addEventListener("input", renderAccounts);
 $("#account-filter").addEventListener("change", renderAccounts);
+$("#delete-disabled-selected").addEventListener("click", deleteSelectedDisabledAccounts);
+$("#accounts-head").addEventListener("change", (event) => {
+  if (event.target.id !== "select-all-disabled") return;
+  document.querySelectorAll("#accounts-body input[data-delete-disabled-account]").forEach((checkbox) => {
+    const accountId = checkbox.dataset.deleteDisabledAccount;
+    if (event.target.checked) state.selectedDisabledAccountIds.add(accountId);
+    else state.selectedDisabledAccountIds.delete(accountId);
+  });
+  renderAccounts();
+});
+$("#accounts-body").addEventListener("change", (event) => {
+  const checkbox = event.target.closest("input[data-delete-disabled-account]");
+  if (!checkbox) return;
+  if (checkbox.checked) state.selectedDisabledAccountIds.add(checkbox.dataset.deleteDisabledAccount);
+  else state.selectedDisabledAccountIds.delete(checkbox.dataset.deleteDisabledAccount);
+  renderAccounts();
+});
 $("#accounts-head").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-account-sort]");
   if (!button) return;
@@ -1099,7 +1272,11 @@ $("#accounts-head").addEventListener("click", (event) => {
 $("#task-search").addEventListener("input", renderTasks);
 $("#accounts-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
-$("#task-dialog").addEventListener("close", () => { activeTaskId = ""; stopTaskDialogRefresh(); });
+$("#task-dialog").addEventListener("close", () => { activeTaskId = ""; stopTaskDialogRefresh(); releaseTaskEvidencePreviews(); });
+$("#task-logs").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-task-evidence]");
+  if (button) toggleTaskEvidence(button);
+});
 $("#complete-auth").addEventListener("click", completeReauth);
 $("#new-account-button").addEventListener("click", openAccountEnrollment);
 $("#account-enrollment-form").addEventListener("submit", submitAccountEnrollment);

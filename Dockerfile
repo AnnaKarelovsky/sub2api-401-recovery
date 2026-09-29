@@ -26,7 +26,7 @@ RUN python -m playwright install chromium
 COPY app ./app
 RUN pip install -c constraints.txt ".[browser]"
 
-RUN mkdir -p /data /backups
+RUN mkdir -p /data /backups /evidence
 
 EXPOSE 1455
 

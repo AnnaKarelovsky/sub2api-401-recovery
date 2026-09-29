@@ -27,9 +27,10 @@ def _json(value: Any) -> str:
 class Database:
     """SQLite persistence with short-lived connections and explicit transactions."""
 
-    def __init__(self, path: str, secret_box: SecretBox):
+    def __init__(self, path: str, secret_box: SecretBox, evidence_dir: str | None = None):
         self.path = Path(path)
         self.secret_box = secret_box
+        self.evidence_dir = Path(evidence_dir) if evidence_dir else self.path.parent / "evidence"
         self._init_lock = threading.Lock()
 
     @contextmanager
@@ -117,6 +118,18 @@ class Database:
                     );
                     CREATE INDEX IF NOT EXISTS idx_recovery_logs_task
                         ON recovery_logs(task_id, created_at, id);
+
+                    CREATE TABLE IF NOT EXISTS task_evidence (
+                        id TEXT PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        content_type TEXT NOT NULL,
+                        file_name TEXT NOT NULL UNIQUE,
+                        size_bytes INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(task_id) REFERENCES recovery_tasks(id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_task_evidence_task
+                        ON task_evidence(task_id, created_at);
 
                     CREATE TABLE IF NOT EXISTS oauth_sessions (
                         id TEXT PRIMARY KEY,
@@ -465,6 +478,65 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def latest_task_for_account(self, account_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM recovery_tasks WHERE sub2api_account_id=? ORDER BY created_at DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def task_has_evidence(self, task_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT file_name FROM task_evidence WHERE task_id=? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        if not row:
+            return False
+        file_name = str(row["file_name"])
+        return Path(file_name).name == file_name and (self.evidence_dir / file_name).is_file()
+
+    def finalize_account_deletion(
+        self,
+        account_id: int,
+        task_id: str,
+        *,
+        already_absent: bool = False,
+    ) -> None:
+        now = utc_now()
+        message = (
+            "所选账号已确认不在 Sub2API 中；恢复日志和诊断截图已保留。"
+            if already_absent
+            else "账号已由管理员从 Sub2API 删除；恢复日志和诊断截图已保留。"
+        )
+        detail = _json(
+            {"account_id": account_id, "evidence_retained": True, "already_absent": already_absent}
+        )
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                UPDATE account_mapping SET status='account_deleted', remote_present=0,
+                    email_password_encrypted=NULL, openai_password_encrypted=NULL,
+                    totp_secret_encrypted=NULL, credentials_encrypted=NULL,
+                    updated_at=? WHERE sub2api_account_id=? AND remote_present=1
+                """,
+                (now, account_id),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise ValueError("account mapping changed before local deletion was finalized")
+            conn.execute("DELETE FROM oauth_sessions WHERE sub2api_account_id=?", (account_id,))
+            conn.execute(
+                """
+                INSERT INTO recovery_logs(task_id, level, stage, message, detail_json, created_at)
+                VALUES (?, 'WARNING', 'account_deleted', ?, ?, ?)
+                """,
+                (task_id, message, detail, now),
+            )
+            conn.commit()
+
     def list_accounts(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -742,7 +814,9 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT t.*, m.email, m.username FROM recovery_tasks t
+                SELECT t.*, m.email, m.username,
+                    EXISTS (SELECT 1 FROM task_evidence e WHERE e.task_id=t.id) AS has_evidence
+                FROM recovery_tasks t
                 LEFT JOIN account_mapping m ON m.sub2api_account_id=t.sub2api_account_id
                 ORDER BY t.created_at DESC LIMIT ? OFFSET ?
                 """,
@@ -843,6 +917,60 @@ class Database:
                 item.pop("detail_json", None)
             result.append(item)
         return result
+
+    def save_task_evidence(self, task_id: str, image: bytes) -> str:
+        if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("evidence must be a PNG image")
+        if len(image) > 12 * 1024 * 1024:
+            raise ValueError("evidence image exceeds the 12 MiB limit")
+        evidence_id = str(uuid.uuid4())
+        file_name = f"{evidence_id}.png.enc"
+        self.evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.evidence_dir, 0o700)
+        file_path = self.evidence_dir / file_name
+        descriptor = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(self.secret_box.encrypt_bytes(image))
+                output.flush()
+                os.fsync(output.fileno())
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO task_evidence(id, task_id, content_type, file_name, size_bytes, created_at)
+                    VALUES (?, ?, 'image/png', ?, ?, ?)
+                    """,
+                    (evidence_id, task_id, file_name, len(image), utc_now()),
+                )
+        except Exception:
+            file_path.unlink(missing_ok=True)
+            raise
+        return evidence_id
+
+    def get_task_evidence(self, task_id: str, evidence_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT content_type, file_name, size_bytes, created_at
+                FROM task_evidence WHERE id=? AND task_id=?
+                """,
+                (evidence_id, task_id),
+            ).fetchone()
+        if not row:
+            return None
+        file_name = str(row["file_name"])
+        if Path(file_name).name != file_name:
+            return None
+        try:
+            encrypted_image = (self.evidence_dir / file_name).read_bytes()
+        except OSError:
+            return None
+        return {
+            "content_type": str(row["content_type"]),
+            "image": self.secret_box.decrypt_bytes(encrypted_image),
+            "size_bytes": int(row["size_bytes"]),
+            "created_at": str(row["created_at"]),
+        }
 
     def acquire_account_lock(self, account_id: int, *, ttl_seconds: int = 300) -> str | None:
         import time
@@ -1119,12 +1247,24 @@ class Database:
                 """,
                 ((datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds"),),
             ).fetchall()
+            active_tasks = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running_count,
+                    SUM(CASE WHEN status='queued' AND stage='retry_wait' THEN 1 ELSE 0 END) AS retry_wait_count,
+                    MIN(CASE WHEN status='queued' AND stage='retry_wait' THEN available_at END) AS next_retry_at
+                FROM recovery_tasks
+                """
+            ).fetchone()
         accounts = {str(row["status"]): int(row["count"]) for row in rows}
         task_counts = {str(row["status"]): int(row["count"]) for row in tasks}
         return {
             "accounts": sum(accounts.values()),
             "auth_failures": accounts.get("auth_failed", 0) + accounts.get("reauth_required", 0),
             "recovering": accounts.get("recovering", 0),
+            "running_tasks": int(active_tasks["running_count"] or 0),
+            "retry_wait_tasks": int(active_tasks["retry_wait_count"] or 0),
+            "next_retry_at": active_tasks["next_retry_at"],
             "success": task_counts.get("succeeded", 0),
             "failed": task_counts.get("failed", 0),
             "manual_required": task_counts.get("manual_required", 0),

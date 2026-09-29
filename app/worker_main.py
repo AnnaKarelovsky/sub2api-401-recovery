@@ -15,7 +15,7 @@ def main() -> None:
     settings = get_settings()
     base_settings = settings.model_copy(deep=True)
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)s %(message)s")
-    db = Database(settings.database_path, SecretBox(settings.encryption_key))
+    db = Database(settings.database_path, SecretBox(settings.encryption_key), settings.evidence_dir)
     db.initialize()
     apply_dashboard_settings(settings, db.load_runtime_settings(), base_settings=base_settings)
     settings.validate_runtime(require_sub2api=False)

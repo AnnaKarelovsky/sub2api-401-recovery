@@ -44,6 +44,33 @@ def test_stale_running_tasks_are_requeued_after_restart(database):
     assert database.claim_next_task("new-worker")["id"] == task_id
 
 
+def test_dashboard_summary_separates_running_and_retry_wait_tasks(database):
+    task_ids = []
+    for account_id in (31, 32, 33):
+        database.upsert_account_snapshot({"sub2api_account_id": account_id, "status": "recovering"})
+        task_id, _ = database.create_task(account_id, trigger="scan")
+        task_ids.append(task_id)
+
+    with database.connect() as conn:
+        conn.execute(
+            "UPDATE recovery_tasks SET status='running', stage='browser' WHERE id=?",
+            (task_ids[0],),
+        )
+        conn.execute(
+            "UPDATE recovery_tasks SET status='queued', stage='retry_wait', available_at=? WHERE id=?",
+            ("2030-01-02T12:00:00+00:00", task_ids[1]),
+        )
+        conn.execute(
+            "UPDATE recovery_tasks SET status='queued', stage='retry_wait', available_at=? WHERE id=?",
+            ("2030-01-01T12:00:00+00:00", task_ids[2]),
+        )
+
+    summary = database.dashboard_summary()
+    assert summary["running_tasks"] == 1
+    assert summary["retry_wait_tasks"] == 2
+    assert summary["next_retry_at"] == "2030-01-01T12:00:00+00:00"
+
+
 def test_backup_creates_a_readable_snapshot(database, tmp_path):
     database.upsert_account_snapshot({"sub2api_account_id": 13, "email": "backup@example.com"})
     destination = tmp_path / "backups" / "snapshot.db"

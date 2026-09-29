@@ -26,6 +26,7 @@ def settings(tmp_path, encryption_key) -> Settings:
         sub2api_admin_key="admin-key",
         database_path=str(tmp_path / "recovery.db"),
         backup_dir=str(tmp_path / "backups"),
+        evidence_dir=str(tmp_path / "evidence"),
         scan_interval_seconds=10,
         recovery_backoff_seconds=0,
     )
@@ -33,6 +34,6 @@ def settings(tmp_path, encryption_key) -> Settings:
 
 @pytest.fixture
 def database(settings) -> Database:
-    db = Database(settings.database_path, SecretBox(settings.encryption_key))
+    db = Database(settings.database_path, SecretBox(settings.encryption_key), settings.evidence_dir)
     db.initialize()
     return db

@@ -53,6 +53,16 @@ class SecretBox:
             raise ValueError("encrypted value is truncated")
         return self.aead.decrypt(raw[:12], raw[12:], b"sub2api-recovery").decode("utf-8")
 
+    def encrypt_bytes(self, value: bytes) -> bytes:
+        nonce = secrets.token_bytes(12)
+        ciphertext = self.aead.encrypt(nonce, value, b"sub2api-recovery-evidence")
+        return b"v1:" + nonce + ciphertext
+
+    def decrypt_bytes(self, value: bytes) -> bytes:
+        if not value.startswith(b"v1:") or len(value) < 31:
+            raise ValueError("unsupported or truncated encrypted evidence")
+        return self.aead.decrypt(value[3:15], value[15:], b"sub2api-recovery-evidence")
+
     def encrypt_json(self, value: dict[str, Any]) -> str:
         return self.encrypt(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
 

@@ -24,11 +24,21 @@ from .totp import TOTPError, totp_code
 
 
 class AutomaticBrowserError(RuntimeError):
-    def __init__(self, reason: str, *, stage: str, retryable: bool = True):
+    def __init__(
+        self,
+        reason: str,
+        *,
+        stage: str,
+        retryable: bool = True,
+        evidence: bytes | None = None,
+        evidence_error: str | None = None,
+    ):
         super().__init__(reason)
         self.reason = safe_error(reason)
         self.stage = stage
         self.retryable = retryable
+        self.evidence = evidence
+        self.evidence_error = safe_error(evidence_error) if evidence_error else None
 
 
 class AutomaticOAuthRunner:
@@ -209,22 +219,14 @@ class AutomaticOAuthRunner:
                 return
             body = self._body_text(page).lower()
             if self._is_account_disabled(body):
-                raise AutomaticBrowserError(
-                    "OpenAI 账号已被删除或停用（account_deactivated）",
-                    stage="account_disabled",
-                    retryable=False,
-                )
+                raise self._account_disabled_error(page)
             if mfa_denials:
                 # Let an error-page navigation finish before classifying a generic MFA 403.
                 for _ in range(4):
                     page.wait_for_timeout(250)
                     body = self._body_text(page).lower()
                     if self._is_account_disabled(body):
-                        raise AutomaticBrowserError(
-                            "OpenAI 账号已被删除或停用（account_deactivated）",
-                            stage="account_disabled",
-                            retryable=False,
-                        )
+                        raise self._account_disabled_error(page)
                 status, category = mfa_denials[-1]
                 message, retryable = self._mfa_denial_reason(category, status=status)
                 raise AutomaticBrowserError(message, stage="totp", retryable=retryable)
@@ -775,6 +777,22 @@ class AutomaticOAuthRunner:
                 "帐户已停用",
                 "账户已停用",
             ),
+        )
+
+    @staticmethod
+    def _account_disabled_error(page: Any) -> AutomaticBrowserError:
+        evidence = None
+        evidence_error = None
+        try:
+            evidence = page.screenshot(type="png", animations="disabled")
+        except Exception as exc:
+            evidence_error = safe_error(exc)
+        return AutomaticBrowserError(
+            "OpenAI 账号已被删除或停用（account_deactivated）",
+            stage="account_disabled",
+            retryable=False,
+            evidence=evidence,
+            evidence_error=evidence_error,
         )
 
     @staticmethod

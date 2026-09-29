@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.classifier import FailureClass
 from app.oauth import TokenSet
 from app.oauth import OAuthError
 from app.automatic_browser import AutomaticBrowserError
@@ -114,6 +115,72 @@ class FakeOAuth:
 class ReauthOAuth:
     def refresh_token(self, refresh_token, previous=None):
         raise OAuthError("invalid_grant", error_code="invalid_grant", reauth_required=True)
+
+
+def test_confirmed_401_skips_both_refresh_paths_and_starts_oauth(database, settings):
+    settings.playwright_enabled = True
+
+    class CountingSub2API(FakeSub2API):
+        native_refresh_calls = 0
+
+        def native_refresh(self, account_id):
+            self.native_refresh_calls += 1
+            return super().native_refresh(account_id)
+
+    class CountingOAuth(ReauthOAuth):
+        refresh_calls = 0
+
+        def refresh_token(self, refresh_token, previous=None):
+            self.refresh_calls += 1
+            return super().refresh_token(refresh_token, previous)
+
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 80, "email": "confirmed-401@example.com", "status": "auth_failed"}
+    )
+    database.save_credentials(
+        80,
+        {
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "email": "confirmed-401@example.com",
+            "openai_password": "openai-password",
+        },
+    )
+    database.update_account_state(
+        80,
+        status="auth_failed",
+        failure_class=FailureClass.AUTH_FAILURE.value,
+        failure_reason="Authentication failed (401): token_revoked",
+        mark_401=True,
+    )
+    sub2api = CountingSub2API()
+    oauth = CountingOAuth()
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, sub2api, oauth, settings))
+    browser_calls = []
+
+    def stop_browser_for_test(auth_url, material, **kwargs):
+        browser_calls.append(auth_url)
+        raise AutomaticBrowserError("test stops before external browser interaction", stage="totp", retryable=False)
+
+    coordinator.automatic_browser.run = stop_browser_for_test
+    task_id, _ = coordinator.enqueue_recovery(80, trigger="manual-recover")
+    task = database.claim_next_task("test-worker")
+
+    coordinator.execute_task(task)
+
+    final_task = database.get_task(task_id)
+    assert final_task["status"] == "failed"
+    assert final_task["stage"] == "totp"
+    assert final_task["auth_session_id"]
+    assert len(browser_calls) == 1
+    assert "/oauth/authorize" in browser_calls[0]
+    assert sub2api.native_refresh_calls == 0
+    assert oauth.refresh_calls == 0
+    assert not any(log["stage"] in {"native_refresh", "refresh_token"} for log in database.list_logs(task_id))
+    assert any(
+        "skipping native and refresh-token attempts" in log["message"]
+        for log in database.list_logs(task_id)
+    )
 
 
 class ReplacementOAuth:
@@ -311,6 +378,7 @@ def test_account_disabled_browser_result_sets_explicit_terminal_status(database,
             "OpenAI account is disabled or deleted (account_deactivated)",
             stage="account_disabled",
             retryable=False,
+            evidence=b"\x89PNG\r\n\x1a\naccount-disabled-page",
         )
 
     coordinator.automatic_browser.run = fail_as_disabled
@@ -324,6 +392,14 @@ def test_account_disabled_browser_result_sets_explicit_terminal_status(database,
     assert mapping["status"] == "account_disabled"
     assert mapping["failure_class"] == "ACCOUNT_ERROR"
     assert "account_deactivated" in mapping["failure_reason"]
+    evidence_log = next(
+        log
+        for log in database.list_logs(task_id)
+        if log["stage"] == "account_disabled" and log.get("detail", {}).get("evidence_id")
+    )
+    evidence = database.get_task_evidence(task_id, evidence_log["detail"]["evidence_id"])
+    assert evidence["content_type"] == "image/png"
+    assert evidence["image"] == b"\x89PNG\r\n\x1a\naccount-disabled-page"
 
 
 def test_disabled_browser_automation_uses_manual_authorization(database, settings):

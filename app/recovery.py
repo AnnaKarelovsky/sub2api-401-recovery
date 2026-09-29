@@ -280,12 +280,13 @@ class RecoveryCoordinator:
         classification: Classification | None = None,
         force: bool = False,
     ) -> tuple[str, bool]:
+        mapping = self.db.get_mapping(account_id) or {}
         task_id, created = self.db.create_task(account_id, trigger=trigger, force=force)
         self.db.update_account_state(
             account_id,
             status="recovering" if created or force else "auth_failed",
-            failure_class=classification.category.value if classification else None,
-            failure_reason=classification.reason if classification else None,
+            failure_class=classification.category.value if classification else mapping.get("failure_class"),
+            failure_reason=classification.reason if classification else mapping.get("failure_reason"),
             mark_401=bool(classification and classification.category == FailureClass.AUTH_FAILURE),
         )
         return task_id, created
@@ -566,12 +567,6 @@ class RecoveryCoordinator:
                 technical_detail=_sub2api_technical_detail(exc),
             ) from exc
         credentials = self.db.load_credentials(account_id)
-        if not credentials.get("refresh_token") or not credentials.get("access_token"):
-            self._log(task_id, "sync", "Fetching the selected account's encrypted credential export")
-            self.db.set_task_stage(task_id, "sync")
-            self._sync_account_credentials(account_id)
-            credentials = self.db.load_credentials(account_id)
-
         oauth_session_id = str(task.get("auth_session_id") or "")
         oauth_session = self.db.get_oauth_session(oauth_session_id) if oauth_session_id else None
         if oauth_session and oauth_session.get("status") == "completed":
@@ -583,6 +578,30 @@ class RecoveryCoordinator:
                 method="automatic OAuth reauthorization",
             )
             return
+
+        if mapping.get("failure_class") == FailureClass.AUTH_FAILURE.value:
+            reason = "Sub2API confirmed an OAuth 401; starting direct OAuth reauthorization"
+            classification = Classification(FailureClass.AUTH_FAILURE, reason, True, True)
+            self.db.set_task_stage(task_id, "automatic_reauthorization")
+            self._log(
+                task_id,
+                "automatic_reauthorization",
+                "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow",
+            )
+            self._mark_manual_required(
+                task_id,
+                account_id,
+                reason,
+                classification,
+                attempt=int(task.get("attempt") or 1),
+            )
+            return
+
+        if not credentials.get("refresh_token") or not credentials.get("access_token"):
+            self._log(task_id, "sync", "Fetching the selected account's encrypted credential export")
+            self.db.set_task_stage(task_id, "sync")
+            self._sync_account_credentials(account_id)
+            credentials = self.db.load_credentials(account_id)
 
         # Prefer Sub2API's own refresh implementation; it knows its internal cache and
         # provider-specific state. A successful native refresh is checked before fallback.
@@ -847,6 +866,17 @@ class RecoveryCoordinator:
                     if account_disabled
                     else classification
                 )
+                evidence_id = None
+                evidence_error = None
+                if account_disabled:
+                    evidence_error = exc.evidence_error
+                    if exc.evidence is not None:
+                        try:
+                            evidence_id = self.db.save_task_evidence(task_id, exc.evidence)
+                        except Exception as save_error:
+                            evidence_error = safe_error(save_error)
+                    elif not evidence_error:
+                        evidence_error = "The browser did not provide a screenshot"
                 session_id = self.db.get_task(task_id).get("auth_session_id") if self.db.get_task(task_id) else None
                 if session_id:
                     self.db.complete_oauth_session(str(session_id), status="failed", error_reason=message)
@@ -879,7 +909,15 @@ class RecoveryCoordinator:
                         else f"Automatic reauthorization exhausted its retries: {message}"
                     ),
                 )
-                self._log(task_id, getattr(exc, "stage", "automatic_reauthorization"), message, exc)
+                self._log(
+                    task_id,
+                    getattr(exc, "stage", "automatic_reauthorization"),
+                    message,
+                    exc,
+                    level="ERROR" if account_disabled else "INFO",
+                    evidence_id=evidence_id,
+                    evidence_error=evidence_error,
+                )
                 return
             except RecoveryFailure:
                 raise
@@ -1295,7 +1333,80 @@ class RecoveryCoordinator:
     def accounts_view(self) -> list[dict[str, Any]]:
         return [public_account(row, self.db.load_credentials(int(row["sub2api_account_id"]))) for row in self.db.list_accounts()]
 
-    def _log(self, task_id: str, stage: str, message: str, detail: Any | None = None) -> None:
+    def delete_confirmed_disabled_accounts(self, account_ids: list[int]) -> dict[str, Any]:
+        selected: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+        for account_id in account_ids:
+            mapping = self.db.get_mapping(account_id)
+            task = self.db.latest_task_for_account(account_id)
+            if (
+                not mapping
+                or not mapping.get("remote_present")
+                or mapping.get("status") != "account_disabled"
+                or not task
+                or task.get("status") != "failed"
+                or task.get("stage") != "account_disabled"
+            ):
+                raise ValueError(
+                    f"Sub2API account {account_id} is not confirmed as disabled; no accounts were deleted"
+                )
+            if not self.db.task_has_evidence(str(task["id"])):
+                raise ValueError(
+                    f"Sub2API account {account_id} has no saved disabled-page screenshot; no accounts were deleted"
+                )
+            selected.append((account_id, mapping, task))
+
+        verified: list[tuple[int, dict[str, Any], dict[str, Any], bool]] = []
+        for account_id, mapping, task in selected:
+            try:
+                remote = self.sub2api.get_account(account_id)
+            except Sub2APIError as exc:
+                if exc.status_code == 404:
+                    verified.append((account_id, mapping, task, False))
+                    continue
+                raise ValueError(
+                    f"Could not verify Sub2API account {account_id}; no accounts were deleted: {safe_error(exc)}"
+                ) from exc
+            remote_credentials = remote.get("credentials") if isinstance(remote.get("credentials"), dict) else {}
+            remote_email = str(remote.get("email") or remote_credentials.get("email") or "").strip()
+            local_email = str(mapping.get("email") or "").strip()
+            if remote_email and local_email and remote_email.casefold() != local_email.casefold():
+                raise ValueError(
+                    f"Sub2API account {account_id} no longer matches the selected email; no accounts were deleted"
+                )
+            verified.append((account_id, mapping, task, True))
+
+        deleted = []
+        failed = []
+        for account_id, mapping, task, remote_present in verified:
+            try:
+                if remote_present:
+                    try:
+                        self.sub2api.delete_account(account_id)
+                    except Sub2APIError as exc:
+                        if exc.status_code != 404:
+                            raise
+                        remote_present = False
+                self.db.finalize_account_deletion(
+                    account_id,
+                    str(task["id"]),
+                    already_absent=not remote_present,
+                )
+                deleted.append({"account_id": account_id, "email": str(mapping.get("email") or "")})
+            except Exception as exc:
+                failed.append({"account_id": account_id, "reason": safe_error(exc)})
+        return {"deleted": deleted, "failed": failed}
+
+    def _log(
+        self,
+        task_id: str,
+        stage: str,
+        message: str,
+        detail: Any | None = None,
+        *,
+        level: str = "INFO",
+        evidence_id: str | None = None,
+        evidence_error: str | None = None,
+    ) -> None:
         if isinstance(detail, AccountTestResult):
             detail = _account_test_technical_detail(detail)
         elif isinstance(detail, Sub2APIError):
@@ -1310,7 +1421,20 @@ class RecoveryCoordinator:
             }
         elif isinstance(detail, TOTPError):
             detail = {"error_type": type(detail).__name__}
-        self.db.append_log(task_id, level="INFO", stage=stage, message=message, detail=detail if isinstance(detail, dict) else None)
+        if isinstance(detail, dict):
+            if evidence_id:
+                detail["evidence_id"] = evidence_id
+                detail["screenshot_saved"] = True
+            if evidence_error:
+                detail["screenshot_saved"] = False
+                detail["screenshot_error"] = safe_error(evidence_error)
+        self.db.append_log(
+            task_id,
+            level=level,
+            stage=stage,
+            message=message,
+            detail=detail if isinstance(detail, dict) else None,
+        )
 
 
 def _account_test_technical_detail(result: AccountTestResult) -> dict[str, Any]:

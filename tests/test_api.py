@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import create_app
+
+
+def test_required_evidence_mount_must_not_share_database_filesystem(settings, tmp_path):
+    settings.evidence_mount_required = True
+    (tmp_path / "evidence").mkdir()
+
+    with pytest.raises(ValueError, match="separate data filesystem"):
+        settings.validate_runtime(require_sub2api=False)
 
 
 def test_health_login_and_dashboard(settings):
@@ -15,6 +24,105 @@ def test_health_login_and_dashboard(settings):
         assert dashboard.status_code == 200
         assert dashboard.json()["summary"]["accounts"] == 0
         assert dashboard.json()["sync"]["status"] == "never"
+
+
+def test_task_evidence_requires_auth_and_is_scoped_to_its_task(settings):
+    image = b"\x89PNG\r\n\x1a\naccount-disabled-page"
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot({"sub2api_account_id": 301, "status": "auth_failed"})
+        task_id, _ = runtime.db.create_task(301, trigger="test")
+        evidence_id = runtime.db.save_task_evidence(task_id, image)
+        evidence_file = settings.evidence_dir + "/" + evidence_id + ".png.enc"
+        with open(evidence_file, "rb") as encrypted_image:
+            assert image not in encrypted_image.read()
+        assert evidence_file.startswith(settings.evidence_dir)
+
+        endpoint = f"/api/v1/tasks/{task_id}/evidence/{evidence_id}"
+        assert client.get(endpoint).status_code == 401
+        assert client.get(f"/api/v1/tasks/missing/evidence/{evidence_id}", headers=headers).status_code == 404
+        response = client.get(endpoint, headers=headers)
+
+        assert response.status_code == 200
+        assert response.content == image
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_disabled_account_delete_preserves_logs_and_evidence_and_clears_materials(settings):
+    image = b"\x89PNG\r\n\x1a\naccount-disabled-page"
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot(
+            {"sub2api_account_id": 302, "email": "disabled@example.com", "status": "account_disabled"}
+        )
+        runtime.db.save_credentials(302, {"refresh_token": "encrypted-refresh", "openai_password": "encrypted-password"})
+        task_id, _ = runtime.db.create_task(302, trigger="test")
+        runtime.db.finish_task(task_id, status="failed", stage="account_disabled", error_reason="account_deactivated")
+        evidence_id = runtime.db.save_task_evidence(task_id, image)
+        runtime.db.append_log(
+            task_id,
+            level="ERROR",
+            stage="account_disabled",
+            message="account_deactivated",
+            detail={"evidence_id": evidence_id, "screenshot_saved": True},
+        )
+        deleted_remote_ids = []
+        runtime.sub2api.get_account = lambda account_id: {"id": account_id, "email": "disabled@example.com"}
+        runtime.sub2api.delete_account = deleted_remote_ids.append
+
+        response = client.request(
+            "DELETE",
+            "/api/v1/accounts/disabled",
+            headers=headers,
+            json={"account_ids": [302], "confirmation": "DELETE"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted"] == [{"account_id": 302, "email": "disabled@example.com"}]
+        assert deleted_remote_ids == [302]
+        assert runtime.db.get_mapping(302)["status"] == "account_deleted"
+        assert runtime.db.get_mapping(302)["remote_present"] == 0
+        assert runtime.db.load_credentials(302) == {}
+        assert runtime.db.get_task_evidence(task_id, evidence_id)["image"] == image
+        assert [log["stage"] for log in runtime.db.list_logs(task_id)][-1] == "account_deleted"
+
+
+def test_disabled_account_delete_refuses_non_disabled_accounts(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot({"sub2api_account_id": 303, "status": "auth_failed"})
+        task_id, _ = runtime.db.create_task(303, trigger="test")
+        runtime.db.finish_task(task_id, status="failed", stage="failed", error_reason="401")
+        runtime.db.upsert_account_snapshot(
+            {"sub2api_account_id": 304, "email": "disabled@example.com", "status": "account_disabled"}
+        )
+        disabled_task_id, _ = runtime.db.create_task(304, trigger="test")
+        runtime.db.finish_task(
+            disabled_task_id,
+            status="failed",
+            stage="account_disabled",
+            error_reason="account_deactivated",
+        )
+        deleted_remote_ids = []
+        runtime.sub2api.delete_account = deleted_remote_ids.append
+        runtime.sub2api.get_account = lambda account_id: {"id": account_id, "email": "disabled@example.com"}
+
+        response = client.request(
+            "DELETE",
+            "/api/v1/accounts/disabled",
+            headers=headers,
+            json={"account_ids": [304, 303], "confirmation": "DELETE"},
+        )
+
+        assert response.status_code == 409
+        assert deleted_remote_ids == []
 
 
 def test_dashboard_settings_are_encrypted_and_reloadable(settings):

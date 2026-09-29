@@ -82,10 +82,11 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .workspace { height: 100%; margin: 0; max-width: 1500px; min-width: 0; overflow: hidden; padding: 32px clamp(24px, 4vw, 58px) 24px; width: 100%; }
 .view-section.content-section { height: 100%; margin-top: 0; overflow: auto; }
 #view-console { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 24px; }
+.metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 24px; }
 .metric { background: var(--paper); border: 1px solid var(--line); border-radius: 7px; padding: 18px; }
 .metric-label { color: var(--muted); font-size: 12px; }
 .metric-value { font-size: 27px; font-weight: 800; margin-top: 3px; }
+.metric-detail { color: var(--muted); font-size: 10px; line-height: 1.3; margin-top: 3px; min-height: 13px; }
 .content-section { background: var(--paper); border: 1px solid var(--line); border-radius: 7px; margin-top: 18px; overflow: hidden; }
 .section-heading { align-items: center; display: flex; justify-content: space-between; padding: 19px 20px; }
 .section-heading h3 { font-size: 17px; margin: 0 0 2px; }
@@ -117,6 +118,7 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .console-account-side-top small { color: var(--teal-dark); font-size: 10px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .console-account-side-bottom { align-items: flex-end; display: grid; gap: 4px; justify-items: end; width: 100%; }
 .console-account-side .state { font-size: 11px; padding: 3px 7px; }
+.console-account-retry-at { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .material-status { border-radius: 99px; display: inline-block; font-size: 11px; font-weight: 750; padding: 3px 7px; white-space: nowrap; }
 .material-status.complete { background: #e6f4ed; color: var(--green); }
 .material-status.partial { background: #fff1e7; color: var(--orange); }
@@ -150,6 +152,7 @@ input:focus, select:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgb
 .timeline-copy p { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 3px 0 0; }
 .timeline-step.done .timeline-marker { background: #e6f4ed; border-color: #b8dfcc; color: var(--green); }
 .timeline-step.running .timeline-marker { background: #fff1e7; border-color: #f3c8a9; color: var(--orange); }
+.timeline-step.waiting .timeline-marker { background: #fff7d8; border-color: #ead99a; color: #8a6512; }
 .timeline-step.error .timeline-marker { background: #fbeaea; border-color: #edb4b4; color: var(--red); }
 .timeline-step.blocked .timeline-marker { background: #fbeaea; border-color: #edb4b4; color: var(--red); }
 .timeline-step.skipped .timeline-marker { color: var(--muted); }
@@ -184,12 +187,18 @@ tr:hover td { background: var(--paper-soft); }
 .state.auth_failed, .state.account_error, .state.account_disabled, .state.failed { background: #fbeaea; color: var(--red); }
 .state.account_replaced { background: #e5f1f5; color: #176b78; }
 .state.recovering, .state.queued, .state.running { background: #fff1e7; color: var(--orange); }
-.state.reauth_required, .state.manual_required { background: #fff7d8; color: #8a6512; }
+.state.reauth_required, .state.manual_required, .state.retry_wait { background: #fff7d8; color: #8a6512; }
 .state.automation_blocked, .state.skipped { background: #edf1f3; color: #5e6b73; }
 .state.observed { background: #fff1e7; color: var(--orange); }
 .state.unknown { background: #edf1f3; color: #5e6b73; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .mini-button { background: var(--paper); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; padding: 5px 8px; }
+.button.danger { border-color: #e3b9b9; color: var(--red); }
+.button.danger:hover:not(:disabled) { background: #fff1f1; border-color: var(--red); }
+.account-delete-status { min-height: 16px; margin: 0 20px 8px; font-size: 12px; overflow-wrap: anywhere; }
+.selection-column { text-align: center; width: 38px; }
+.selection-column input { accent-color: var(--teal); margin: 0; }
+.evidence-needed { color: var(--orange); font-size: 10px; margin-top: 4px; }
 .mini-button:hover { border-color: var(--teal); color: var(--teal-dark); }
 .empty { color: var(--muted); padding: 30px 20px; text-align: center; }
 dialog { background: transparent; border: 0; max-width: min(720px, calc(100vw - 28px)); padding: 0; width: 100%; }
@@ -230,6 +239,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .log-top { align-items: center; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 11px; gap: 8px; }
 .log-stage { color: var(--teal-dark); font-weight: 750; }
 .log-message { line-height: 1.6; margin-top: 5px; }
+.log-evidence { margin-top: 9px; }
+.log-evidence img { background: #16191b; border: 1px solid var(--line); border-radius: 4px; display: block; height: auto; margin-top: 8px; max-height: 520px; max-width: 100%; object-fit: contain; }
 .log-technical { margin-top: 8px; }
 .log-technical summary { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .log-technical summary:hover { color: var(--teal-dark); }
@@ -246,8 +257,6 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .profiles-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
 .profiles-controls select { flex: 1 1 180px; margin: 0; min-width: 0; width: auto; }
 .profiles-controls .button { min-height: 34px; padding: 6px 10px; }
-.button.danger { color: var(--red); }
-.button.danger:hover { border-color: var(--red); color: var(--red); }
 .profiles-bar > .muted { grid-column: 2; margin-top: -4px; text-align: right; }
 .settings-groups { align-items: start; display: grid; gap: 18px 26px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .settings-group { border-top: 2px solid #dce8e8; min-width: 0; padding-top: 13px; }
@@ -275,6 +284,7 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .inspector-alert.waiting { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
 :root[data-theme="dark"] .state.recovering, :root[data-theme="dark"] .state.queued, :root[data-theme="dark"] .state.running, :root[data-theme="dark"] .state.observed, :root[data-theme="dark"] .timeline-step.running .timeline-marker { background: rgba(241, 154, 98, .15); border-color: rgba(241, 154, 98, .42); }
+:root[data-theme="dark"] .state.retry_wait, :root[data-theme="dark"] .timeline-step.waiting .timeline-marker { background: rgba(224, 190, 76, .16); border-color: rgba(224, 190, 76, .42); color: #f0cd69; }
 :root[data-theme="dark"] .state.reauth_required, :root[data-theme="dark"] .state.manual_required { background: rgba(224, 190, 76, .16); color: #f0cd69; }
 @media (max-width: 900px) {
   .app-shell { height: auto; min-height: 100vh; overflow: visible; }

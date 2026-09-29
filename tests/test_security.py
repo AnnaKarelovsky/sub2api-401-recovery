@@ -18,6 +18,15 @@ def test_secret_box_json_round_trip(encryption_key):
     assert box.decrypt_json(box.encrypt_json(value)) == value
 
 
+def test_secret_box_encrypts_image_bytes(encryption_key):
+    box = SecretBox(encryption_key)
+    image = b"\x89PNG\r\n\x1a\nprivate-image-data"
+    encrypted = box.encrypt_bytes(image)
+    assert encrypted.startswith(b"v1:")
+    assert image not in encrypted
+    assert box.decrypt_bytes(encrypted) == image
+
+
 def test_session_token_verification(encryption_key):
     for _ in range(100):
         token = issue_session_token("secret", "admin", 600)

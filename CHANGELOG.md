@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 - 2026-09-29
+
+### Recovery workflow and operations
+
+- Confirmed Sub2API OAuth 401 responses now start the browser OAuth reauthorization flow directly; native refresh and the old refresh token path are skipped.
+- Added retry-wait visibility, automatic retry timing, stale-worker recovery, and clearer task-stage reporting in the dashboard.
+- Added encrypted screenshots for detected OpenAI account-disabled pages so operators can verify that the failure was classified correctly.
+- Added guarded bulk deletion for accounts manually confirmed as disabled; recovery logs and screenshot evidence remain available for audit.
+- Moved screenshot evidence to a required persistent host directory and documented the large-volume deployment requirement.
+
+### Dashboard and documentation
+
+- Improved account sorting, status filters, material indicators, log details, evidence previews, and direct-OAuth progress timelines.
+- Added runtime configuration profiles and updated the README with deployment, recovery-material, and account-deletion guidance.
+
+Validation: 83 automated tests passed; Ruff, Python compilation, JavaScript syntax, Docker health, worker restart state, and Playwright timeline rendering checks passed.
+
 ## 0.2.0 - 2026-09-26
 
 ### Account recovery and enrollment

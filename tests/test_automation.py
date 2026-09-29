@@ -203,6 +203,10 @@ def test_account_deactivated_page_is_not_misreported_as_totp_failure(settings):
 
             return Body()
 
+        def screenshot(self, **kwargs):
+            assert kwargs == {"type": "png", "animations": "disabled"}
+            return b"\x89PNG\r\n\x1a\naccount-disabled-page"
+
     runner = AutomaticOAuthRunner(settings)
     try:
         runner._complete_login(
@@ -216,6 +220,7 @@ def test_account_deactivated_page_is_not_misreported_as_totp_failure(settings):
         assert exc.stage == "account_disabled"
         assert not exc.retryable
         assert "account_deactivated" in exc.reason
+        assert exc.evidence == b"\x89PNG\r\n\x1a\naccount-disabled-page"
     else:
         raise AssertionError("disabled account page should be classified as account disabled")
 

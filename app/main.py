@@ -4,11 +4,11 @@ import html
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -63,6 +63,11 @@ class AccountEnrollmentCreate(BaseModel):
     name: str = Field(default="", max_length=120)
 
 
+class DeleteDisabledAccountsRequest(BaseModel):
+    account_ids: list[int] = Field(min_length=1, max_length=50)
+    confirmation: Literal["DELETE"]
+
+
 class DashboardSettingsUpdate(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     clear_secrets: list[str] = Field(default_factory=list)
@@ -76,7 +81,7 @@ class AppRuntime:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.base_settings = settings.model_copy(deep=True)
-        self.db = Database(settings.database_path, SecretBox(settings.encryption_key))
+        self.db = Database(settings.database_path, SecretBox(settings.encryption_key), settings.evidence_dir)
         self.db.initialize()
         self.reload_settings(rebuild=False)
         self.sub2api = Sub2APIClient(settings)
@@ -314,6 +319,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             items = [item for item in items if item.get("status") == status_filter]
         return {"items": items, "total": len(items)}
 
+    @app.delete("/api/v1/accounts/disabled")
+    def delete_disabled_accounts(
+        payload: DeleteDisabledAccountsRequest,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        if len(set(payload.account_ids)) != len(payload.account_ids):
+            raise HTTPException(status_code=422, detail="duplicate account IDs are not allowed")
+        try:
+            return rt.coordinator.delete_confirmed_disabled_accounts(payload.account_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/v1/account-enrollments", status_code=202)
     def create_account_enrollment(
         payload: AccountEnrollmentCreate,
@@ -546,6 +564,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="task not found")
         item["logs"] = rt.db.list_logs(task_id)
         return item
+
+    @app.get("/api/v1/tasks/{task_id}/evidence/{evidence_id}")
+    def task_evidence(
+        task_id: str,
+        evidence_id: str,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> Response:
+        item = rt.db.get_task_evidence(task_id, evidence_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="task evidence not found")
+        return Response(
+            content=item["image"],
+            media_type=item["content_type"],
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.post("/api/v1/tasks/{task_id}/retry", status_code=202)
     def retry_task(

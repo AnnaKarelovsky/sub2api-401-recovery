@@ -142,6 +142,13 @@ class Sub2APIClient:
         )
         return data if isinstance(data, dict) else {}
 
+    def delete_account(self, account_id: int) -> None:
+        self._request(
+            "DELETE",
+            f"/api/v1/admin/accounts/{account_id}",
+            operation="delete_account",
+        )
+
     def export_account_credentials(self, account_id: int) -> dict[str, Any] | None:
         data = self._request(
             "GET",

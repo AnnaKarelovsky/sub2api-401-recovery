@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -138,6 +139,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_path: str = "./data/recovery.db"
     backup_dir: str = "./backups"
+    evidence_dir: str = Field(default="/evidence", validation_alias="EVIDENCE_DIR")
+    evidence_mount_required: bool = Field(default=False, validation_alias="EVIDENCE_MOUNT_REQUIRED")
 
     encryption_key: str = Field(default="", validation_alias="ENCRYPTION_KEY")
     dashboard_username: str = Field(default="admin", validation_alias="DASHBOARD_USERNAME")
@@ -209,6 +212,14 @@ class Settings(BaseSettings):
                 raise ValueError("SUB2API_BASE_URL must be configured")
             if not (self.sub2api_admin_key.strip() or self.sub2api_jwt.strip()):
                 raise ValueError("SUB2API_ADMIN_KEY or SUB2API_JWT must be configured")
+        if self.evidence_mount_required:
+            try:
+                database_device = Path(self.database_path).parent.stat().st_dev
+                evidence_device = Path(self.evidence_dir).stat().st_dev
+            except OSError as exc:
+                raise ValueError("EVIDENCE_DIR must be mounted and accessible") from exc
+            if evidence_device == database_device:
+                raise ValueError("EVIDENCE_DIR must be on a separate data filesystem from DATABASE_PATH")
         if self.scan_interval_seconds < 10:
             raise ValueError("SCAN_INTERVAL_SECONDS must be at least 10")
         try:

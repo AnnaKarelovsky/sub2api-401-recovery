@@ -15,7 +15,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = get_settings()
     settings.validate_runtime(require_sub2api=False)
-    db = Database(settings.database_path, SecretBox(settings.encryption_key))
+    db = Database(settings.database_path, SecretBox(settings.encryption_key), settings.evidence_dir)
     db.initialize()
     if args.command == "backup":
         output = args.output or f"{settings.backup_dir}/recovery-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
