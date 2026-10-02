@@ -1,5 +1,7 @@
 # Sub2API 401 Recovery
 
+中文文档：[README.zh-CN.md](README.zh-CN.md)
+
 Sub2API 401 Recovery is a companion service for Sub2API. It watches OpenAI OAuth accounts, detects invalid authentication, performs automatic OAuth reauthorization when the required login materials are available, and writes the new credentials back to the original Sub2API account.
 
 It is designed for operators who manage their own Sub2API instance and need a durable recovery queue, clear failure stages, and an audit trail instead of manually repairing accounts one by one.
