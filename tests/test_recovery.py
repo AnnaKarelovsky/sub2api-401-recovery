@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.classifier import FailureClass
+from app.classifier import Classification, FailureClass
 from app.oauth import TokenSet
 from app.oauth import OAuthError
 from app.automatic_browser import AutomaticBrowserError
@@ -25,6 +25,12 @@ class FakeSub2API:
 
     def inspect_account(self, account_id):
         return AccountTestResult(True, 200, "connection test passed", None)
+
+    def list_account_models(self, account_id):
+        return [{"id": "gpt-6-luna", "type": "model"}]
+
+    def probe_account_with_model(self, account_id, model_id):
+        return AccountTestResult(True, 200, "upstream probe passed", None)
 
     def recover_state(self, account_id):
         self.recovered.append(account_id)
@@ -229,6 +235,67 @@ def test_scan_marks_deactivated_workspace_as_account_error(database, settings):
     assert mapping["status"] == "account_error"
     assert mapping["failure_class"] == "ACCOUNT_ERROR"
     assert mapping["failure_reason"] == "Sub2API workspace is deactivated"
+
+
+def test_scan_queues_current_sub2api_401_error_shape(database, settings):
+    settings.scan_probe_active_accounts = False
+    settings.automation_require_complete_notes = False
+
+    class Modern401Sub2API(ScanSub2API):
+        def __init__(self):
+            super().__init__()
+            self.accounts = [
+                {
+                    "id": 222,
+                    "email": "logan@example.com",
+                    "status": "limited",
+                    "credentials_status": {"upstream_status_code": 401},
+                    "extra": {"error_code": "token_revoked"},
+                }
+            ]
+
+    coordinator = RecoveryCoordinator(
+        RecoveryRuntime(database, Modern401Sub2API(), FakeOAuth(), settings)
+    )
+
+    result = coordinator.scan()
+
+    assert result["auth_failures"] == 1
+    assert result["queued"] == 1
+    task = database.list_tasks(limit=1)[0]
+    assert task["failure_class"] is None
+    assert database.get_mapping(222)["failure_class"] == FailureClass.AUTH_FAILURE.value
+
+
+def test_scan_uses_dynamic_upstream_probe_for_hidden_401(database, settings):
+    settings.scan_probe_active_accounts = False
+    settings.automation_require_complete_notes = False
+
+    class Hidden401Sub2API(ScanSub2API):
+        def list_account_models(self, account_id):
+            return [{"id": "gpt-6-luna", "type": "model"}]
+
+        def probe_account_with_model(self, account_id, model_id):
+            return AccountTestResult(
+                False,
+                401,
+                "API returned 401: token_revoked",
+                Classification(
+                    FailureClass.AUTH_FAILURE,
+                    "API returned 401: token_revoked",
+                    True,
+                ),
+            )
+
+    coordinator = RecoveryCoordinator(
+        RecoveryRuntime(database, Hidden401Sub2API(), FakeOAuth(), settings)
+    )
+
+    result = coordinator.scan()
+
+    assert result["auth_failures"] == 1
+    assert result["queued"] == 1
+    assert database.get_mapping(7)["failure_class"] == FailureClass.AUTH_FAILURE.value
 
 
 def test_scan_does_not_repeat_terminal_automation_failure_without_material_changes(database, settings):

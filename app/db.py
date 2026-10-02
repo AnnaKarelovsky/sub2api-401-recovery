@@ -76,6 +76,7 @@ class Database:
                         last_401_at TEXT,
                         last_recovery_at TEXT,
                         last_test_at TEXT,
+                        last_upstream_probe_at TEXT,
                         last_seen_at TEXT,
                         materials_checked_at TEXT,
                         remote_present INTEGER NOT NULL DEFAULT 1,
@@ -226,6 +227,10 @@ class Database:
                 if "materials_checked_at" not in columns:
                     conn.execute(
                         "ALTER TABLE account_mapping ADD COLUMN materials_checked_at TEXT"
+                    )
+                if "last_upstream_probe_at" not in columns:
+                    conn.execute(
+                        "ALTER TABLE account_mapping ADD COLUMN last_upstream_probe_at TEXT"
                     )
                 runtime_meta_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(runtime_settings_meta)")
@@ -620,6 +625,15 @@ class Database:
         with self.connect() as conn:
             conn.execute(
                 "UPDATE account_mapping SET materials_checked_at = ?, updated_at = ? "
+                "WHERE sub2api_account_id = ?",
+                (now, now, account_id),
+            )
+
+    def mark_upstream_probe(self, account_id: int) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE account_mapping SET last_upstream_probe_at = ?, updated_at = ? "
                 "WHERE sub2api_account_id = ?",
                 (now, now, account_id),
             )

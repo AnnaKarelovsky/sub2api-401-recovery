@@ -63,3 +63,16 @@ def test_snapshot_reads_explicit_oauth_error_without_generic_error_status():
     assert result is not None
     assert result.category == FailureClass.AUTH_FAILURE
     assert result.needs_reauthorization
+
+
+def test_snapshot_reads_current_sub2api_nested_error_fields():
+    result = classify_account_snapshot(
+        {
+            "id": 222,
+            "status": "limited",
+            "credentials_status": {"upstream_status_code": 401},
+            "extra": {"error_code": "token_revoked"},
+        }
+    )
+    assert result is not None
+    assert result.category == FailureClass.AUTH_FAILURE

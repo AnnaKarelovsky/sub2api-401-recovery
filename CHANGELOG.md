@@ -1,10 +1,28 @@
 # Changelog
 
+## 0.4.0 - 2026-10-02
+
+### Detection and recovery
+
+- Added a low-frequency upstream 401 probe that selects a current text model from each account's `/models` catalog and parses Sub2API's SSE test response for `401` and `token_revoked` errors.
+- Limited active probing to one account per scan with a default 30-minute per-account cooldown; passive Admin API state synchronization remains every 60 seconds.
+- Added durable upstream-probe timestamps and Dashboard settings for probe enablement, interval, and per-scan limits.
+
+### Dashboard and release packaging
+
+- Stopped the recovery console from rebuilding unchanged screenshot previews during background refreshes, eliminating periodic evidence-image flicker.
+- Rewrote the README as a user-facing project guide and added sanitized Dashboard screenshots.
+- Updated the prebuilt release Compose file and installer to persist encrypted evidence storage and use the `v0.4.0` image.
+
+Validation: automated tests, Ruff, Python compilation, JavaScript syntax, Docker health, dynamic SSE probe parsing, and Playwright refresh-stability checks passed.
+
 ## 0.3.0 - 2026-09-29
 
 ### Recovery workflow and operations
 
 - Confirmed Sub2API OAuth 401 responses now start the browser OAuth reauthorization flow directly; native refresh and the old refresh token path are skipped.
+- Synced the current Sub2API account-state fields (`error_message`, nested OAuth status, and token error codes) and shortened healthy-account detail polling to 60 seconds.
+- Added a low-frequency upstream 401 probe that discovers each account's current text model dynamically, parses Sub2API SSE errors, and limits probing to one account per scan with a 30-minute per-account cooldown.
 - Added retry-wait visibility, automatic retry timing, stale-worker recovery, and clearer task-stage reporting in the dashboard.
 - Added encrypted screenshots for detected OpenAI account-disabled pages so operators can verify that the failure was classified correctly.
 - Added guarded bulk deletion for accounts manually confirmed as disabled; recovery logs and screenshot evidence remain available for audit.

@@ -132,6 +132,56 @@ class Sub2APIClient:
         )
         return data if isinstance(data, dict) else {}
 
+    def list_account_models(self, account_id: int) -> list[dict[str, Any]]:
+        data = self._request(
+            "GET", f"/api/v1/admin/accounts/{account_id}/models", operation="list_account_models"
+        )
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    def probe_account_with_model(self, account_id: int, model_id: str) -> "AccountTestResult":
+        """Run Sub2API's SSE account probe with a model discovered at runtime.
+
+        This is intentionally separate from ``inspect_account``: the latter only
+        reads persisted account state, while this method performs the low-frequency
+        upstream check needed to catch a stale active/error state.
+        """
+        try:
+            response = self.client.post(
+                f"/api/v1/admin/accounts/{account_id}/test",
+                headers={**self._headers(), "Accept": "text/event-stream"},
+                json={"model_id": model_id, "mode": "default"},
+                timeout=self.test_timeout,
+            )
+        except httpx.HTTPError as exc:
+            classification = classify_failure(message=str(exc))
+            return AccountTestResult(False, None, safe_error(exc), classification)
+        if response.status_code >= 400:
+            message = _payload_message(_decode_response(response)) or response.reason_phrase or "account probe failed"
+            classification = classify_failure(http_status=response.status_code, message=message)
+            return AccountTestResult(False, response.status_code, safe_error(message), classification)
+
+        events = _decode_sse_events(response.text)
+        error_event = next((event for event in reversed(events) if event.get("type") == "error"), None)
+        if error_event:
+            message = str(error_event.get("error") or error_event.get("message") or "account probe failed")
+            status_code = _extract_status_code(message)
+            classification = classify_failure(http_status=status_code, message=message)
+            return AccountTestResult(False, status_code, safe_error(message), classification)
+        completed = next(
+            (event for event in reversed(events) if event.get("type") == "test_complete"),
+            None,
+        )
+        if completed and completed.get("success") is True:
+            return AccountTestResult(True, 200, "Sub2API upstream account probe succeeded", None)
+        return AccountTestResult(
+            False,
+            200,
+            "Sub2API upstream account probe did not complete",
+            classify_failure(message="Sub2API upstream account probe did not complete"),
+        )
+
     def create_account(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = self._request(
             "POST",
@@ -235,6 +285,30 @@ def _decode_response(response: httpx.Response) -> Any:
         return response.json()
     except (json.JSONDecodeError, ValueError):
         return response.text
+
+
+def _decode_sse_events(body: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _extract_status_code(message: str) -> int | None:
+    import re
+
+    match = re.search(r"(?<!\d)(401|403|429|5\d\d)(?!\d)", str(message or ""))
+    return int(match.group(1)) if match else None
 
 
 def _unwrap_data(payload: Any) -> Any:

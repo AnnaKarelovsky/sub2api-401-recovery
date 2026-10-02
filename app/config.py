@@ -40,6 +40,9 @@ DASHBOARD_SETTING_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "scan_page_size", "label": "每页账号数", "type": "integer", "min": 1, "max": 1000},
             {"key": "scan_probe_active_accounts", "label": "检查正常账号", "type": "boolean"},
             {"key": "scan_probe_interval_seconds", "label": "正常账号检查间隔（秒）", "type": "integer", "min": 10, "max": 604800},
+            {"key": "upstream_probe_enabled", "label": "启用低频上游账号探测", "type": "boolean"},
+            {"key": "upstream_probe_interval_seconds", "label": "上游探测间隔（秒）", "type": "integer", "min": 300, "max": 604800},
+            {"key": "upstream_probe_max_per_scan", "label": "每轮上游探测账号数", "type": "integer", "min": 1, "max": 10},
             {"key": "material_sync_enabled", "label": "每日同步账号备注材料", "type": "boolean"},
             {"key": "material_sync_hour", "label": "备注同步时间（小时）", "type": "integer", "min": 0, "max": 23},
             {"key": "material_sync_timezone", "label": "备注同步时区", "type": "text"},
@@ -162,7 +165,10 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 60
     scan_page_size: int = 100
     scan_probe_active_accounts: bool = True
-    scan_probe_interval_seconds: int = 900
+    scan_probe_interval_seconds: int = 60
+    upstream_probe_enabled: bool = True
+    upstream_probe_interval_seconds: int = 1800
+    upstream_probe_max_per_scan: int = 1
     material_sync_enabled: bool = True
     material_sync_hour: int = 0
     material_sync_timezone: str = "Asia/Shanghai"

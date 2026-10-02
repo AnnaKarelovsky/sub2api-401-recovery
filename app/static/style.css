@@ -241,6 +241,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .log-message { line-height: 1.6; margin-top: 5px; }
 .log-evidence { margin-top: 9px; }
 .log-evidence img { background: #16191b; border: 1px solid var(--line); border-radius: 4px; display: block; height: auto; margin-top: 8px; max-height: 520px; max-width: 100%; object-fit: contain; }
+.inline-log-evidence img { max-height: 360px; }
+.evidence-loading, .inline-log-evidence { color: var(--muted); font-size: 11px; }
 .log-technical { margin-top: 8px; }
 .log-technical summary { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .log-technical summary:hover { color: var(--teal-dark); }

@@ -1,6 +1,6 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
@@ -189,7 +189,6 @@ const TECHNICAL_LABELS = {
   exception_type: "异常类型",
   backoff_seconds: "重试等待（秒）",
   raw_reason: "原始原因",
-  screenshot_saved: "页面截图已保存",
   screenshot_error: "页面截图保存失败",
 };
 
@@ -354,11 +353,41 @@ function renderTaskEvidence(log, taskId) {
   return `<div class="log-evidence"><button class="mini-button" type="button" data-task-evidence="${escapeHtml(taskId)}" data-evidence-id="${escapeHtml(evidenceId)}">查看页面截图</button></div>`;
 }
 
-function releaseTaskEvidencePreviews() {
-  document.querySelectorAll(".log-evidence[data-preview-url]").forEach((container) => {
+function renderInlineTaskEvidence(log, taskId) {
+  const evidenceId = log.detail?.evidence_id;
+  if (!evidenceId) return "";
+  return `<div class="log-evidence inline-log-evidence" data-inline-task-evidence="${escapeHtml(taskId)}" data-evidence-id="${escapeHtml(evidenceId)}"><span class="evidence-loading">正在加载页面截图...</span><img hidden alt="OpenAI 账号停用错误页面截图" /></div>`;
+}
+
+function releaseTaskEvidencePreviews(root = document) {
+  root.querySelectorAll(".log-evidence[data-preview-url]").forEach((container) => {
     URL.revokeObjectURL(container.dataset.previewUrl);
     delete container.dataset.previewUrl;
   });
+}
+
+async function loadInlineTaskEvidencePreviews(root) {
+  const containers = [...root.querySelectorAll("[data-inline-task-evidence]")];
+  await Promise.all(containers.map(async (container) => {
+    try {
+      const path = `/api/v1/tasks/${encodeURIComponent(container.dataset.inlineTaskEvidence)}/evidence/${encodeURIComponent(container.dataset.evidenceId)}`;
+      const response = await fetch(path, { headers: { Authorization: `Bearer ${state.token}` } });
+      if (response.status === 401) { logout(); throw new Error("登录已过期"); }
+      if (!response.ok) throw new Error("页面截图暂时无法加载");
+      const imageUrl = URL.createObjectURL(await response.blob());
+      if (!container.isConnected) {
+        URL.revokeObjectURL(imageUrl);
+        return;
+      }
+      container.dataset.previewUrl = imageUrl;
+      const image = container.querySelector("img");
+      image.src = imageUrl;
+      image.hidden = false;
+      container.querySelector(".evidence-loading")?.remove();
+    } catch (error) {
+      if (container.isConnected) container.textContent = `页面截图加载失败：${error.message}`;
+    }
+  }));
 }
 
 async function toggleTaskEvidence(button) {
@@ -647,11 +676,31 @@ function renderRecoveryTimeline(task) {
 
 function renderRecoveryLogPreview(task) {
   const logs = (task?.logs || []).slice(-5).reverse();
+  const preview = $("#recovery-log-preview");
+  const signature = JSON.stringify({
+    id: task?.id || "",
+    status: task?.status || "",
+    stage: task?.stage || "",
+    error: task?.error_reason || "",
+    logs: logs.map((log) => ({
+      id: log.id,
+      stage: log.stage,
+      level: log.level,
+      message: log.message,
+      created_at: log.created_at,
+      evidence_id: log.detail?.evidence_id || "",
+      screenshot_error: log.detail?.screenshot_error || "",
+    })),
+  });
+  if (signature === state.recoveryPreviewSignature) return;
+  state.recoveryPreviewSignature = signature;
+  releaseTaskEvidencePreviews(preview);
   if (!logs.length) {
-    $("#recovery-log-preview").innerHTML = `<div class="preview-empty">${task ? "任务已建立，等待第一条处理记录。" : "该账号还没有恢复记录。"}</div>`;
+    preview.innerHTML = `<div class="preview-empty">${task ? "任务已建立，等待第一条处理记录。" : "该账号还没有恢复记录。"}</div>`;
     return;
   }
-  $("#recovery-log-preview").innerHTML = logs.map((log) => `<article class="preview-log ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderTechnicalDetails(log)}</article>`).join("");
+  preview.innerHTML = logs.map((log) => `<article class="preview-log ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderInlineTaskEvidence(log, task.id)}${renderTechnicalDetails(log)}</article>`).join("");
+  void loadInlineTaskEvidencePreviews(preview);
 }
 
 function renderRecoveryInspector() {
@@ -1082,7 +1131,7 @@ function renderTaskDetail(task) {
   $("#task-meta").innerHTML = `<span><strong>账号</strong>${escapeHtml(task.sub2api_account_id)}</span><span><strong>阶段</strong>${escapeHtml(stageLabel(task.stage))}</span><span><strong>状态</strong>${escapeHtml(statusLabel(task.status))}</span><span class="task-error"><strong>处理结果</strong>${escapeHtml(taskErrorSummary(task))}</span>`;
   const logs = $("#task-logs");
   const stickToBottom = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 32;
-  releaseTaskEvidencePreviews();
+  releaseTaskEvidencePreviews(logs);
   logs.innerHTML = (task.logs || []).map((log) => `<article class="log-line ${String(log.level || "").toLowerCase() === "error" ? "log-error" : ""}"><div class="log-top"><span class="log-stage">${escapeHtml(stageLabel(log.stage))}</span><span>${escapeHtml(formatDate(log.created_at))}</span><span>${escapeHtml(LOG_LEVEL_LABELS[log.level] || log.level || "记录")}</span></div><div class="log-message">${escapeHtml(humanizeLogMessage(log))}</div>${renderTechnicalDetails(log)}${renderTaskEvidence(log, task.id)}</article>`).join("") || `<div class="empty">暂无日志</div>`;
   if (stickToBottom) logs.scrollTop = logs.scrollHeight;
   $("#task-dialog-status").textContent = TERMINAL_TASK_STATUSES.has(task.status) ? "" : "自动更新中 · 每 2 秒检查";
@@ -1272,7 +1321,7 @@ $("#accounts-head").addEventListener("click", (event) => {
 $("#task-search").addEventListener("input", renderTasks);
 $("#accounts-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
 $("#tasks-body").addEventListener("click", (event) => { const button = event.target.closest("button[data-action]"); if (button) handleAction(button.dataset.action, button.dataset.id); });
-$("#task-dialog").addEventListener("close", () => { activeTaskId = ""; stopTaskDialogRefresh(); releaseTaskEvidencePreviews(); });
+$("#task-dialog").addEventListener("close", () => { activeTaskId = ""; stopTaskDialogRefresh(); releaseTaskEvidencePreviews($("#task-logs")); });
 $("#task-logs").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-task-evidence]");
   if (button) toggleTaskEvidence(button);

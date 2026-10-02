@@ -127,7 +127,7 @@ def classify_account_snapshot(snapshot: dict[str, Any]) -> Classification | None
     """Return a recovery-relevant classification for one Sub2API account snapshot."""
 
     credentials = snapshot.get("credentials") or {}
-    expires_at = _as_epoch(credentials.get("expires_at"))
+    expires_at = _as_epoch(credentials.get("expires_at") or snapshot.get("expires_at"))
     import time
 
     expired = expires_at is not None and expires_at <= int(time.time())
@@ -145,8 +145,28 @@ def classify_account_snapshot(snapshot: dict[str, Any]) -> Classification | None
         if value:
             message_parts.append(str(value))
     nested_error = snapshot.get("error")
-    if isinstance(nested_error, dict):
-        message_parts.extend(str(nested_error[key]) for key in ("message", "reason", "detail") if nested_error.get(key))
+    nested_sources = [
+        nested_error,
+        snapshot.get("credentials_status"),
+        snapshot.get("extra"),
+    ]
+    for source in nested_sources:
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "error_message",
+            "last_error",
+            "message",
+            "reason",
+            "detail",
+            "token_status",
+            "oauth_error",
+            "oauth_error_code",
+            "error_code",
+        ):
+            value = source.get(key)
+            if value:
+                message_parts.append(str(value))
     oauth_error = " ".join(
         str(snapshot.get(key) or "")
         for key in ("oauth_error", "oauth_error_code", "error_code")
@@ -180,7 +200,12 @@ def classify_account_snapshot(snapshot: dict[str, Any]) -> Classification | None
 
 def _snapshot_status(snapshot: dict[str, Any], nested_error: Any) -> int | None:
     statuses: list[int] = []
-    for source in (snapshot, nested_error if isinstance(nested_error, dict) else {}):
+    sources = [snapshot, nested_error if isinstance(nested_error, dict) else {}]
+    for key in ("credentials_status", "extra"):
+        value = snapshot.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    for source in sources:
         for key in ("http_status", "status_code", "upstream_status", "upstream_status_code"):
             value = source.get(key)
             try:

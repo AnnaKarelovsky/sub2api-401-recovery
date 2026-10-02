@@ -116,3 +116,35 @@ def test_account_status_check_accepts_healthy_detail(settings):
         client.close()
     assert result.success
     assert result.reason == "Sub2API account status is healthy"
+
+
+def test_dynamic_upstream_probe_uses_discovered_model_and_parses_sse_401(settings):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={"code": 0, "data": [{"id": "gpt-6-luna", "type": "model"}]},
+            )
+        captured["json"] = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            text='data: {"type":"test_start","model":"gpt-6-luna"}\n\n'
+            'data: {"type":"error","error":"API returned 401: token_revoked"}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = Sub2APIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        models = client.list_account_models(7)
+        result = client.probe_account_with_model(7, models[0]["id"])
+    finally:
+        client.close()
+    assert models == [{"id": "gpt-6-luna", "type": "model"}]
+    assert not result.success
+    assert result.status_code == 401
+    assert result.classification.category.value == "401_AUTH_FAILURE"
+    assert captured["path"].endswith("/accounts/7/test")
+    assert captured["json"] == {"model_id": "gpt-6-luna", "mode": "default"}

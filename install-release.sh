@@ -5,7 +5,7 @@ project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_dir"
 
 repository="AnnaKarelovsky/sub2api-401-recovery"
-release_version="${RECOVERY_VERSION:-v0.2.0}"
+release_version="${RECOVERY_VERSION:-v0.4.0}"
 image="${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${release_version}}"
 raw_base="https://raw.githubusercontent.com/${repository}/${release_version}"
 
@@ -35,7 +35,7 @@ download_if_missing() {
 download_if_missing .env.example
 download_if_missing docker-compose.release.yml
 
-mkdir -p data backups
+mkdir -p data backups evidence
 if [ ! -f .env ]; then
   cp .env.example .env
 fi
@@ -57,7 +57,7 @@ set_generated_value() {
 set_generated_value ENCRYPTION_KEY "$(generate_secret)"
 set_generated_value DASHBOARD_SECRET "$(generate_secret)"
 
-chmod 700 data backups
+chmod 700 data backups evidence
 chmod 600 .env
 
 compose=(docker compose -f docker-compose.release.yml)

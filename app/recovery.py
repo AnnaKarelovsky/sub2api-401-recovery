@@ -76,6 +76,7 @@ class RecoveryCoordinator:
             self.db.record_event("scan_started", "Sub2API account scan started", {"source": source})
             accounts = self.sub2api.list_accounts()
             found = queued = auth_failures = 0
+            upstream_probe_candidates: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
             remote_account_ids: set[int] = set()
             for raw in accounts:
                 snapshot = normalize_snapshot(raw)
@@ -196,6 +197,19 @@ class RecoveryCoordinator:
                                     message="Account test detected an OAuth authentication failure",
                                     detail={"classification": probe.classification.category.value},
                                 )
+                if (
+                    self.settings.upstream_probe_enabled
+                    and classification is None
+                    and snapshot.get("status") in {"active", "healthy"}
+                    and str(snapshot.get("account_type") or "oauth") in {"oauth", "setup-token"}
+                    and current.get("status") not in {"account_disabled", "account_replaced"}
+                    and self._upstream_probe_due(current.get("last_upstream_probe_at"))
+                ):
+                    upstream_probe_candidates.append((int(account_id), raw, current))
+            for account_id, raw, current in upstream_probe_candidates[: max(1, self.settings.upstream_probe_max_per_scan)]:
+                probe_auth, probe_queued = self._run_upstream_probe(account_id, raw, current)
+                auth_failures += int(probe_auth)
+                queued += int(probe_queued)
             removed = self.db.mark_accounts_missing(remote_account_ids)
             result = {"found": found, "auth_failures": auth_failures, "queued": queued, "removed": removed}
             self.db.record_event("scan_completed", "Sub2API account scan completed", result)
@@ -271,6 +285,105 @@ class RecoveryCoordinator:
             )
         except (TypeError, ValueError):
             return True
+
+    def _upstream_probe_due(self, last_probe_at: Any) -> bool:
+        if not last_probe_at:
+            return True
+        try:
+            parsed = datetime.fromisoformat(str(last_probe_at))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) - parsed >= timedelta(
+                seconds=self.settings.upstream_probe_interval_seconds
+            )
+        except (TypeError, ValueError):
+            return True
+
+    def _run_upstream_probe(
+        self,
+        account_id: int,
+        raw: dict[str, Any],
+        current: dict[str, Any],
+    ) -> tuple[bool, bool]:
+        self.db.mark_upstream_probe(account_id)
+        try:
+            models = self.sub2api.list_account_models(account_id)
+        except Sub2APIError as exc:
+            self.db.record_event(
+                "upstream_probe_failed",
+                "Could not load a dynamic model for the upstream account probe",
+                {"account_id": account_id, "reason": safe_error(exc)},
+            )
+            return False, False
+        model_id = _select_upstream_probe_model(models)
+        if not model_id:
+            self.db.record_event(
+                "upstream_probe_skipped",
+                "No text model was available for the upstream account probe",
+                {"account_id": account_id},
+            )
+            return False, False
+        result = self.sub2api.probe_account_with_model(account_id, model_id)
+        classification = result.classification
+        is_auth_failure = bool(
+            classification and classification.category == FailureClass.AUTH_FAILURE
+        )
+        self._log_upstream_probe(account_id, model_id, result)
+        if result.success:
+            self.db.update_account_state(
+                account_id,
+                status="healthy",
+                failure_class=None,
+                failure_reason=None,
+            )
+            return False, False
+        self.db.update_account_state(
+            account_id,
+            status="auth_failed" if is_auth_failure else "observed",
+            failure_class=classification.category.value if classification else None,
+            failure_reason=result.reason,
+            mark_401=is_auth_failure,
+        )
+        if not is_auth_failure:
+            return False, False
+        local_credentials = self.db.load_credentials(account_id)
+        try:
+            material = self._sync_note_material(account_id, raw)
+        except Sub2APIError:
+            material = self._material_from_credentials(local_credentials, current.get("email", ""))
+        if self.settings.automation_require_complete_notes and not material.ready_for_automation:
+            self._block_automation(account_id, classification, _automation_block_reason(material))
+            return True, False
+        previous_material = self._material_from_credentials(
+            local_credentials,
+            str(current.get("email") or ""),
+        )
+        if self._suppress_unchanged_blocked_retry(current, previous_material, material):
+            return True, False
+        task_id, created = self.enqueue_recovery(
+            account_id,
+            trigger="automatic-upstream-probe",
+            classification=classification,
+            force=True,
+        )
+        if created:
+            self.db.append_log(
+                task_id,
+                level="INFO",
+                stage="probe",
+                message="Dynamic upstream account probe detected an OAuth authentication failure and queued recovery",
+                detail={"classification": classification.category.value},
+            )
+        return True, created
+
+    def _log_upstream_probe(self, account_id: int, model_id: str, result: AccountTestResult) -> None:
+        detail = _account_test_technical_detail(result)
+        detail["probe_model"] = model_id
+        self.db.record_event(
+            "upstream_probe_completed" if result.success else "upstream_probe_failed",
+            "Dynamic upstream account probe completed" if result.success else "Dynamic upstream account probe failed",
+            {"account_id": account_id, **detail},
+        )
 
     def enqueue_recovery(
         self,
@@ -1445,6 +1558,18 @@ def _account_test_technical_detail(result: AccountTestResult) -> dict[str, Any]:
     }
 
 
+def _select_upstream_probe_model(models: list[dict[str, Any]]) -> str:
+    for model in models:
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        lowered = model_id.lower()
+        if any(marker in lowered for marker in ("image", "audio", "embedding", "search")):
+            continue
+        return model_id
+    return ""
+
+
 def _sub2api_technical_detail(error: Sub2APIError) -> dict[str, Any]:
     return {
         "operation": error.operation,
@@ -1503,6 +1628,7 @@ def public_account(row: dict[str, Any], credentials: dict[str, Any]) -> dict[str
         "last_401_at": row.get("last_401_at"),
         "last_recovery_at": row.get("last_recovery_at"),
         "last_test_at": row.get("last_test_at"),
+        "last_upstream_probe_at": row.get("last_upstream_probe_at"),
         "last_seen_at": row.get("last_seen_at"),
         "has_access_token": bool(credentials.get("access_token")),
         "has_refresh_token": bool(credentials.get("refresh_token")),
