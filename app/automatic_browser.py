@@ -139,6 +139,7 @@ class AutomaticOAuthRunner:
                             page = context.new_page()
                             callback_urls: list[str] = []
                             security_failures: list[str] = []
+                            authorization_failures: list[str] = []
                             auth_responses: list[str] = []
                             mfa_denials: list[tuple[int, str]] = []
 
@@ -156,12 +157,15 @@ class AutomaticOAuthRunner:
                                     mfa_denials.append(
                                         (int(response.status), self._safe_auth_error_category(int(response.status)))
                                     )
-                                if response.status not in {403, 429}:
+                                if parsed.path.rstrip("/") != "/api/accounts/authorize/continue" or response.status < 400:
                                     return
-                                if parsed.path == "/api/accounts/authorize/continue":
+                                message = f"OpenAI authorization endpoint returned HTTP {response.status}"
+                                if response.status in {403, 429}:
                                     security_failures.append(
-                                        f"OpenAI authorization endpoint returned HTTP {response.status}"
+                                        message
                                     )
+                                else:
+                                    authorization_failures.append(message)
 
                             page.on("framenavigated", capture_callback)
                             page.on("response", capture_security_response)
@@ -178,6 +182,7 @@ class AutomaticOAuthRunner:
                                 on_stage=on_stage,
                                 auth_responses=auth_responses,
                                 mfa_denials=mfa_denials,
+                                authorization_failures=authorization_failures,
                             )
                             return self._wait_for_callback(page, callback_urls, on_stage=on_stage)
                         finally:
@@ -199,6 +204,7 @@ class AutomaticOAuthRunner:
         on_stage: Callable[[str, str], None] | None = None,
         auth_responses: list[str] | None = None,
         mfa_denials: list[tuple[int, str]] | None = None,
+        authorization_failures: list[str] | None = None,
     ) -> None:
         email_submitted = False
         password_submitted = False
@@ -211,6 +217,8 @@ class AutomaticOAuthRunner:
         last_action_signature: tuple[str, str] | None = None
         last_action_started_at = 0.0
         last_action_stage = "oauth_flow"
+        last_action_retry_count = 0
+        action_progress_timeout = max(30.0, min(45.0, self.settings.playwright_timeout_seconds / 4))
         deadline = time.monotonic() + self.settings.playwright_timeout_seconds
         last_page_signature: tuple[str, str] | None = None
         last_page_changed_at = time.monotonic()
@@ -234,7 +242,17 @@ class AutomaticOAuthRunner:
                 self._wait_through_challenge(page, on_stage=on_stage)
                 continue
             if security_failures:
-                raise AutomaticBrowserError(security_failures[-1], stage="security_challenge", retryable=True)
+                raise AutomaticBrowserError(
+                    f"{security_failures[-1]} ({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                    stage="security_challenge",
+                    retryable=True,
+                )
+            if authorization_failures:
+                raise AutomaticBrowserError(
+                    f"{authorization_failures[-1]} ({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                    stage="oauth_flow",
+                    retryable=True,
+                )
             if self._is_security_error(body):
                 raise AutomaticBrowserError(
                     "OAuth page requires a security challenge that automation cannot complete",
@@ -382,7 +400,13 @@ class AutomaticOAuthRunner:
                     last_action_signature = (page.url, body)
                     last_action_started_at = time.monotonic()
                     last_action_stage = "email"
-                    self._click_action(page)
+                    last_action_retry_count = 0
+                    if not self._click_action(page, field=email_input):
+                        raise AutomaticBrowserError(
+                            f"OpenAI email form did not expose a usable submit control ({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                            stage="email",
+                            retryable=True,
+                        )
                     page.wait_for_timeout(800)
                     continue
 
@@ -395,13 +419,29 @@ class AutomaticOAuthRunner:
                     last_action_signature = (page.url, body)
                     last_action_started_at = time.monotonic()
                     last_action_stage = "openai_password"
-                    self._click_action(page)
+                    last_action_retry_count = 0
+                    if not self._click_action(page, field=password_input):
+                        raise AutomaticBrowserError(
+                            f"OpenAI password form did not expose a usable submit control ({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                            stage="openai_password",
+                            retryable=True,
+                        )
                     page.wait_for_timeout(1000)
                     continue
 
             action_signature = (page.url, body)
             if action_signature == last_action_signature:
-                if time.monotonic() - last_action_started_at >= 12:
+                if time.monotonic() - last_action_started_at >= action_progress_timeout:
+                    if last_action_stage in {"email", "openai_password"} and last_action_retry_count < 1:
+                        last_action_retry_count += 1
+                        self._notify(
+                            on_stage,
+                            last_action_stage,
+                            "OpenAI 页面没有确认提交，正在重试一次。",
+                        )
+                        if self._click_action(page):
+                            last_action_started_at = time.monotonic()
+                            continue
                     messages = {
                         "email": ("OpenAI did not advance after the account email was submitted", "email"),
                         "openai_password": ("OpenAI did not advance after the password was submitted", "openai_password"),
@@ -409,7 +449,11 @@ class AutomaticOAuthRunner:
                         "oauth_flow": ("OpenAI authorization page did not advance after Continue was submitted", "oauth_flow"),
                     }
                     message, stage = messages.get(last_action_stage, messages["oauth_flow"])
-                    raise AutomaticBrowserError(message, stage=stage, retryable=True)
+                    raise AutomaticBrowserError(
+                        f"{message} ({self._page_diagnostic(page, auth_responses=auth_responses)})",
+                        stage=stage,
+                        retryable=True,
+                    )
                 page.wait_for_timeout(500)
                 continue
 
@@ -417,6 +461,7 @@ class AutomaticOAuthRunner:
                 last_action_signature = action_signature
                 last_action_started_at = time.monotonic()
                 last_action_stage = "oauth_flow"
+                last_action_retry_count = 0
                 self._notify(on_stage, "oauth_flow", "Submitting the OAuth consent or continue step")
                 page.wait_for_timeout(900)
                 continue
@@ -831,7 +876,13 @@ class AutomaticOAuthRunner:
             inputs[0].fill(code)
 
     @staticmethod
-    def _click_action(page: Any) -> bool:
+    def _click_action(page: Any, *, field: Any | None = None) -> bool:
+        if field is not None:
+            try:
+                field.press("Enter", timeout=3000)
+                return True
+            except Exception:
+                pass
         if AutomaticOAuthRunner._click_matching(
             page,
             ("continue", "next", "verify", "submit", "sign in", "log in", "confirm", "proceed"),

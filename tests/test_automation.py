@@ -103,6 +103,20 @@ def test_click_matching_supports_accessibility_role_buttons(settings):
     assert page.clicked
 
 
+def test_click_action_submits_the_active_field_before_scanning_page_buttons():
+    class Field:
+        def __init__(self):
+            self.pressed = []
+
+        def press(self, key, timeout=None):
+            self.pressed.append((key, timeout))
+
+    field = Field()
+
+    assert AutomaticOAuthRunner._click_action(object(), field=field)
+    assert field.pressed == [("Enter", 3000)]
+
+
 def test_auth_response_diagnostic_omits_query_and_redacts_challenge_id():
     response = SimpleNamespace(
         url=(
