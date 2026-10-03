@@ -70,7 +70,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.1`：
+当前发布版为 `v0.4.2`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -95,7 +95,7 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-VERSION=v0.4.1 bash install-release.sh
+VERSION=v0.4.2 bash install-release.sh
 ```
 
 ### 从源码运行
@@ -246,7 +246,9 @@ install-release.sh      发布版安装脚本
 .env.example            配置模板
 ```
 
-## 责任说明
+## 许可证与责任说明
+
+本项目采用 [Apache License 2.0](LICENSE)。你可以使用、修改、商用和再分发本项目，但需要遵守许可证中的版权、专利、免责声明和修改说明要求。
 
 本项目只适用于你有权管理的 Sub2API 实例和账号。请遵守 OpenAI、邮箱服务商、代理服务商及所在地区的条款。自动化登录涉及敏感凭据，部署前应配置访问控制、备份和最小权限。
 

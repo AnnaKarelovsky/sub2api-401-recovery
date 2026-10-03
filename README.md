@@ -102,7 +102,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.1/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.2/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -286,5 +286,7 @@ backup.sh                  SQLite online backup
 ```
 
 ## License And Responsibility
+
+This project is licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute it, including commercially, subject to the license terms.
 
 Use this service only with accounts and infrastructure you are authorized to manage. You are responsible for complying with the terms, security requirements, and applicable laws of Sub2API, OpenAI, mailbox providers, proxy providers, and your deployment environment.

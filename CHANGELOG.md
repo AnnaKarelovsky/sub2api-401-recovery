@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-10-03
+
+### Licensing and packaging
+
+- Added the Apache License 2.0 and declared it in the Python package metadata.
+- Published the license as part of the distribution package and synchronized release references to `v0.4.2`.
+
 ## 0.4.1 - 2026-10-03
 
 ### Browser recovery and release quality
