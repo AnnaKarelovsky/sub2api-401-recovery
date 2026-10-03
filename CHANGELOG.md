@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-10-03
+
+### Browser recovery and release quality
+
+- Hardened new-account enrollment after email submission by using the active form field first, adding a single submission retry, and allowing slower OAuth responses to complete.
+- Added redacted authorization endpoint diagnostics to enrollment failures instead of reporting only a generic timeout.
+- Added a sanitized screenshot of a real successful recovery flow to the project documentation.
+- Synchronized package, API, installer, and prebuilt Compose versions to `0.4.1`.
+
 ## 0.4.0 - 2026-10-02
 
 ### Detection and recovery

@@ -2,11 +2,17 @@
 
 中文文档：[README.zh-CN.md](README.zh-CN.md)
 
+> A self-hosted Sub2API companion for detecting OpenAI OAuth 401s and recovering eligible accounts through a real OAuth browser flow.
+
 Sub2API 401 Recovery is a companion service for Sub2API. It watches OpenAI OAuth accounts, detects invalid authentication, performs automatic OAuth reauthorization when the required login materials are available, and writes the new credentials back to the original Sub2API account.
 
 It is designed for operators who manage their own Sub2API instance and need a durable recovery queue, clear failure stages, and an audit trail instead of manually repairing accounts one by one.
 
 ![Recovery console](docs/screenshots/dashboard.png)
+
+The screenshot below is a sanitized view of a real successful recovery task. It shows the browser OAuth flow, callback session, credential write-back, and final account-state verification.
+
+![Successful recovery](docs/screenshots/recovery-success.png)
 
 ## What It Does
 
@@ -96,7 +102,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.0/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.1/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```

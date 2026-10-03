@@ -2,6 +2,8 @@
 
 English: [README.md](README.md)
 
+> 面向 Sub2API 管理者的自托管 OAuth 401 检测与恢复服务。
+
 Sub2API 401 Recovery 是 Sub2API 的配套恢复服务。它通过 Sub2API Admin API 同步账号状态，识别 OAuth 凭据失效，并在账号备注中存在必要登录材料时，自动执行重新授权、验证码处理、TOTP 验证和凭据回写。
 
 它面向自行维护 Sub2API 的运营者，目标是把“发现 401、定位失败阶段、恢复账号、保留证据”变成一个可观察的工作流，而不是逐个账号手工处理。
@@ -46,6 +48,10 @@ Sub2API 账号状态
 
 ![恢复控制台](docs/screenshots/dashboard.png)
 
+下图来自本机真实成功恢复任务的脱敏展示，完整显示了 OAuth 浏览器流程、回调会话、凭据写回和最终状态验证。
+
+![成功恢复](docs/screenshots/recovery-success.png)
+
 ![恢复日志](docs/screenshots/recovery-logs.png)
 
 ## 运行要求
@@ -64,7 +70,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.0`：
+当前发布版为 `v0.4.1`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -89,7 +95,7 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-VERSION=v0.4.0 bash install-release.sh
+VERSION=v0.4.1 bash install-release.sh
 ```
 
 ### 从源码运行
