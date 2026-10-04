@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.4 - 2026-10-04
+
+### 429 handling
+
+- Added a dedicated `限额中` account state for upstream HTTP 429 and usage-limit responses.
+- 429 accounts no longer enter the 401 recovery queue or browser reauthorization flow.
+- Manual recovery is rejected for rate-limited accounts; status checks remain available.
+- Added regression coverage for scan classification and manual recovery protection.
+
 ## 0.4.3 - 2026-10-04
 
 ### Account material synchronization

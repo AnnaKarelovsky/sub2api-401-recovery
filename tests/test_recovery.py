@@ -117,6 +117,19 @@ class ErrorScanSub2API(ScanSub2API):
             }
         ]
 
+
+class RateLimitScanSub2API(ScanSub2API):
+    def __init__(self):
+        super().__init__()
+        self.accounts = [
+            {
+                "id": 316,
+                "email": "limited@example.com",
+                "status": "active",
+                "error_message": 'API returned 429: {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}',
+            }
+        ]
+
 class FakeOAuth:
     def refresh_token(self, refresh_token, previous=None):
         return TokenSet(
@@ -248,6 +261,46 @@ def test_scan_marks_deactivated_workspace_as_account_error(database, settings):
     assert mapping["status"] == "account_error"
     assert mapping["failure_class"] == "ACCOUNT_ERROR"
     assert mapping["failure_reason"] == "Sub2API workspace is deactivated"
+
+
+def test_scan_marks_429_as_rate_limited_without_creating_recovery_task(database, settings):
+    settings.scan_probe_active_accounts = False
+    coordinator = RecoveryCoordinator(
+        RecoveryRuntime(database, RateLimitScanSub2API(), FakeOAuth(), settings)
+    )
+
+    result = coordinator.scan()
+
+    assert result["queued"] == 0
+    assert database.list_tasks(limit=10) == []
+    mapping = database.get_mapping(316)
+    assert mapping["status"] == "rate_limited"
+    assert mapping["failure_class"] == FailureClass.RATE_LIMIT.value
+
+
+def test_manual_recovery_rejects_a_rate_limited_account(database, settings):
+    database.upsert_account_snapshot(
+        {
+            "sub2api_account_id": 316,
+            "email": "limited@example.com",
+            "status": "active",
+            "error_message": "HTTP 429 usage_limit_reached",
+        }
+    )
+    database.update_account_state(
+        316,
+        status="rate_limited",
+        failure_class=FailureClass.RATE_LIMIT.value,
+        failure_reason="HTTP 429 usage limit reached",
+    )
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), FakeOAuth(), settings))
+
+    try:
+        coordinator.enqueue_recovery(316, trigger="manual-recover", force=True)
+    except ValueError as exc:
+        assert "429" in str(exc)
+    else:
+        raise AssertionError("rate-limited accounts must not enter recovery")
 
 
 def test_scan_queues_current_sub2api_401_error_shape(database, settings):

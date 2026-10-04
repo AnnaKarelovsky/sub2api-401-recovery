@@ -150,13 +150,13 @@ class RecoveryCoordinator:
                         status=(
                             "account_error"
                             if classification.category == FailureClass.ACCOUNT_ERROR
-                            else "observed"
+                            else ("rate_limited" if classification.category == FailureClass.RATE_LIMIT else "observed")
                         ),
                         failure_class=classification.category.value,
                         failure_reason=classification.reason,
                     )
                 elif snapshot.get("status") in {"active", "healthy"}:
-                    if current and current.get("status") == "unknown":
+                    if current and current.get("status") in {"unknown", "rate_limited"}:
                         self.db.update_account_state(
                             int(account_id), status="healthy", failure_class=None, failure_reason=None
                         )
@@ -168,7 +168,19 @@ class RecoveryCoordinator:
                         )
                         self.db.update_account_state(
                             int(account_id),
-                            status="healthy" if probe.success else ("auth_failed" if probe_is_auth else "observed"),
+                            status=(
+                                "healthy"
+                                if probe.success
+                                else (
+                                    "auth_failed"
+                                    if probe_is_auth
+                                    else (
+                                        "rate_limited"
+                                        if probe.classification and probe.classification.category == FailureClass.RATE_LIMIT
+                                        else "observed"
+                                    )
+                                )
+                            ),
                             failure_class=(
                                 probe.classification.category.value if probe.classification else None
                             ),
@@ -349,7 +361,11 @@ class RecoveryCoordinator:
             return False, False
         self.db.update_account_state(
             account_id,
-            status="auth_failed" if is_auth_failure else "observed",
+            status=(
+                "auth_failed"
+                if is_auth_failure
+                else ("rate_limited" if classification and classification.category == FailureClass.RATE_LIMIT else "observed")
+            ),
             failure_class=classification.category.value if classification else None,
             failure_reason=result.reason,
             mark_401=is_auth_failure,
@@ -404,6 +420,10 @@ class RecoveryCoordinator:
         force: bool = False,
     ) -> tuple[str, bool]:
         mapping = self.db.get_mapping(account_id) or {}
+        if classification and classification.category == FailureClass.RATE_LIMIT:
+            raise ValueError("429 usage limit is not an authentication failure and does not need recovery")
+        if mapping.get("failure_class") == FailureClass.RATE_LIMIT.value:
+            raise ValueError("429 usage limit is not an authentication failure and does not need recovery")
         task_id, created = self.db.create_task(account_id, trigger=trigger, force=force)
         self.db.update_account_state(
             account_id,
@@ -922,7 +942,15 @@ class RecoveryCoordinator:
         )
         self.db.update_account_state(
             account_id,
-            status="healthy" if result.success else ("auth_failed" if is_auth_failure else "observed"),
+            status=(
+                "healthy"
+                if result.success
+                else (
+                    "auth_failed"
+                    if is_auth_failure
+                    else ("rate_limited" if result.classification and result.classification.category == FailureClass.RATE_LIMIT else "observed")
+                )
+            ),
             failure_class=result.classification.category.value if result.classification else None,
             failure_reason=None if result.success else result.reason,
             mark_401=is_auth_failure,

@@ -199,7 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             runtime.close()
 
-    app = FastAPI(title=settings.app_name, version="0.4.3", lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, version="0.4.4", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -394,11 +394,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from .recovery import normalize_snapshot
 
             rt.db.upsert_account_snapshot(normalize_snapshot(raw))
-        task_id, created = rt.coordinator.enqueue_recovery(
-            account_id,
-            trigger="manual-recover",
-            force=False,
-        )
+        try:
+            task_id, created = rt.coordinator.enqueue_recovery(
+                account_id,
+                trigger="manual-recover",
+                force=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"task_id": task_id, "created": created}
 
     @app.put("/api/v1/accounts/{account_id}/materials")

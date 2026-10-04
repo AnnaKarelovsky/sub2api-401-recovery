@@ -93,7 +93,7 @@ function stopDashboardRefresh() {
 }
 
 function stateBadge(value) {
-  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  const text = { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", rate_limited: "限额中", succeeded: "成功", failed: "失败", skipped: "已跳过", queued: "排队中", running: "执行中", retry_wait: "等待重试", observed: "需关注", unknown: "未知" }[value] || value || "未知";
   return `<span class="state ${escapeHtml(value || "unknown")}">${escapeHtml(text)}</span>`;
 }
 
@@ -117,7 +117,7 @@ function materialStatus(account) {
 }
 
 function accountStatusLabel(value) {
-  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", retry_wait: "等待重试", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", observed: "需关注", unknown: "未知" }[value] || value || "未知";
+  return { healthy: "正常", auth_failed: "认证失败", recovering: "恢复中", retry_wait: "等待重试", reauth_required: "等待授权", manual_required: "待授权", automation_blocked: "材料不足", account_error: "账号异常", account_disabled: "账号已删除或停用", account_replaced: "已创建新账号", rate_limited: "限额中", observed: "需关注", unknown: "未知" }[value] || value || "未知";
 }
 
 function escapeHtml(value) {
@@ -176,7 +176,7 @@ const STAGE_LABELS = {
 
 const STATUS_LABELS = { queued: "排队中", running: "执行中", manual_required: "等待授权", succeeded: "成功", failed: "失败", skipped: "已跳过", retry_wait: "等待重试" };
 const ACCOUNT_SORT_LABELS = { account: "账号", id: "Sub2API ID", status: "状态", materials: "自动登录材料", credentials: "凭据", last_401: "最近 401" };
-const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, observed: 8, healthy: 9, unknown: 99 };
+const ACCOUNT_STATUS_ORDER = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, rate_limited: 8, observed: 9, healthy: 10, unknown: 99 };
 const LOG_LEVEL_LABELS = { INFO: "记录", ERROR: "错误", WARNING: "警告" };
 const TECHNICAL_LABELS = {
   status_code: "HTTP 状态码",
@@ -547,7 +547,7 @@ function accountName(account) {
 }
 
 function accountPriority(account) {
-  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, observed: 8, healthy: 9, unknown: 99 };
+  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, rate_limited: 8, observed: 9, healthy: 10, unknown: 99 };
   return priority[accountStatusForUi(account)] ?? 99;
 }
 
@@ -726,10 +726,13 @@ function renderRecoveryInspector() {
   const accountReplaced = account.status === "account_replaced" || task?.stage === "account_replaced";
   const automationBlocked = account.status === "automation_blocked" || task?.stage === "automation_blocked";
   const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
-  const standardActions = `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}`;
+  const rateLimited = account.status === "rate_limited";
+  const standardActions = rateLimited
+    ? `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("test", account.sub2api_account_id, "检查状态")}`
+    : `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}`;
   $("#recovery-actions").innerHTML = `${accountReplaced ? "" : standardActions}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
   const retryWaiting = task?.status === "queued" && task.stage === "retry_wait";
-  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (retryWaiting ? "等待重试" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务")))));
+  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (rateLimited ? "上游使用额度已达到限制，等待额度恢复" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (retryWaiting ? "等待重试" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"))))));
   $("#recovery-live-text").textContent = retryWaiting ? `预计 ${formatDate(task.available_at)} 重试` : (task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : ""));
   const alert = $("#recovery-alert");
   if (accountDisabled) {
@@ -866,6 +869,7 @@ function renderAccounts() {
     const accountId = String(account.sub2api_account_id);
     const latestTask = latestTaskForAccount(accountId);
     const needsScreenshotReview = account.status === "account_disabled" && latestTask?.stage === "account_disabled" && !latestTask.has_evidence;
+    const recoveryAction = account.status === "rate_limited" ? "" : actionButton("recover", account.sub2api_account_id, needsScreenshotReview ? "重新核验" : "恢复");
     return `<tr>
     <td class="selection-column">${eligible ? `<input type="checkbox" data-delete-disabled-account="${escapeHtml(accountId)}" aria-label="选择已确认停用账号 ${escapeHtml(accountId)}" ${state.selectedDisabledAccountIds.has(accountId) ? "checked" : ""} />` : ""}</td>
     <td><div class="account-name">${escapeHtml(account.email || account.username || "未命名账号")}</div><div class="account-sub">${escapeHtml(account.failure_reason || account.plan_type || "OpenAI OAuth")}</div></td>
@@ -874,7 +878,7 @@ function renderAccounts() {
     <td>${materialStatus(account)}</td>
     <td><span class="account-sub">${account.has_access_token ? "AT" : "-"} / ${account.has_refresh_token ? "RT" : "-"}</span></td>
     <td>${escapeHtml(formatDate(account.last_401_at))}</td>
-    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${actionButton("recover", account.sub2api_account_id, needsScreenshotReview ? "重新核验" : "恢复")}${actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}${latestTask?.stage === "account_disabled" ? actionButton("detail", latestTask.id, "诊断日志") : ""}</div></td>
+    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${recoveryAction}${account.status === "rate_limited" ? "" : actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}${latestTask?.stage === "account_disabled" ? actionButton("detail", latestTask.id, "诊断日志") : ""}</div></td>
   </tr>`;
   }).join("");
   updateDisabledAccountSelectionControls(visibleEligible);
