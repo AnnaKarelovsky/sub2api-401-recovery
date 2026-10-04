@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6 - 2026-10-05
+
+### Account table layout
+
+- Prevented account status badges from wrapping individual Chinese characters into a vertical layout.
+
 ## 0.4.5 - 2026-10-05
 
 ### Frontend cache refresh
