@@ -70,7 +70,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.2`：
+当前发布版为 `v0.4.3`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -95,7 +95,7 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-VERSION=v0.4.2 bash install-release.sh
+VERSION=v0.4.3 bash install-release.sh
 ```
 
 ### 从源码运行
@@ -187,6 +187,12 @@ OpenAI密码：openai-password
 - 邮箱验证码无法读取、凭据过期、触发额外安全挑战或页面结构变化时，任务会失败并记录具体阶段。
 
 备注中不应放无关文本，也不要把真实密码写入 README、截图或工单。建议在 Sub2API 管理端完成备注编辑，并在恢复控制台确认材料状态。
+
+### 新账号检查频率
+
+账号列表和状态默认每 60 秒同步一次。新账号首次被发现后，会在这次扫描中立即读取备注并更新材料状态，通常不需要等到每日同步。已经检查过的账号不会在每轮扫描中重复读取备注。
+
+每天 00:00（默认 `Asia/Shanghai`）还会执行一次全量备注同步，用来发现账号备注后续发生的变化。材料检查只读取备注，不会发送模型请求。
 
 ## 恢复边界
 

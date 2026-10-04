@@ -7,7 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
 COPY constraints.txt ./
 
 # Keep build-time package and browser downloads on the same egress path as runtime traffic.
@@ -23,6 +22,7 @@ RUN pip install --upgrade pip \
 RUN if [ "$INSTALL_BROWSER_DEPS" = "1" ]; then python -m playwright install-deps chromium; fi
 RUN python -m playwright install chromium
 
+COPY pyproject.toml ./
 COPY app ./app
 RUN pip install -c constraints.txt ".[browser]"
 

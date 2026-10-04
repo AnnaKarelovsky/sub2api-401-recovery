@@ -10,7 +10,7 @@
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.2/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.3/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -22,7 +22,7 @@ chmod +x install-release.sh
 升级到新版本时，设置目标版本并重新执行脚本：
 
 ```bash
-RECOVERY_VERSION=v0.4.2 ./install-release.sh
+RECOVERY_VERSION=v0.4.3 ./install-release.sh
 ```
 
 脚本会保留已有 `.env`、`data/` 和 `backups/`。
@@ -56,7 +56,7 @@ docker compose ps
 docker compose logs -f recovery-api recovery-worker
 ```
 
-控制台默认端口为 `1455`。`recovery-api` 提供 Web API 和 dashboard，`recovery-worker` 负责每 60 秒扫描和执行任务。两个进程共享 `./data/recovery.db`，SQLite WAL 和账号级锁保证同一账号不会并发恢复；worker 启动时会把上一次进程停止后遗留的运行中任务重新排队。
+控制台默认端口为 `1455`。`recovery-api` 提供 Web API 和 dashboard，`recovery-worker` 负责每 60 秒扫描和执行任务。新账号首次发现后会在该轮扫描中立即读取备注；每天配置的时间还会执行一次全量备注同步。两个进程共享 `./data/recovery.db`，SQLite WAL 和账号级锁保证同一账号不会并发恢复；worker 启动时会把上一次进程停止后遗留的运行中任务重新排队。
 
 ## 3. 代理
 

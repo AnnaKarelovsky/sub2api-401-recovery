@@ -88,6 +88,16 @@ class RecoveryCoordinator:
                 self.db.upsert_account_snapshot(snapshot)
                 current = self.db.get_mapping(int(account_id)) or {}
                 local_credentials = self.db.load_credentials(int(account_id))
+                initial_material: NoteCredentials | None = None
+                if not current.get("materials_checked_at"):
+                    try:
+                        initial_material = self._sync_note_material(int(account_id), raw)
+                    except Exception as exc:
+                        self.db.record_event(
+                            "account_notes_sync_failed",
+                            "Could not read account note credentials for a newly discovered account",
+                            {"account_id": int(account_id), "reason": safe_error(exc)},
+                        )
                 classification_snapshot = dict(raw)
                 merged_credentials = dict(raw.get("credentials") or {})
                 merged_credentials.update(local_credentials)
@@ -102,7 +112,7 @@ class RecoveryCoordinator:
                             local_credentials,
                             str(current.get("email") or ""),
                         )
-                        material = self._sync_note_material(int(account_id), raw)
+                        material = initial_material or self._sync_note_material(int(account_id), raw)
                     except Sub2APIError as exc:
                         self.db.record_event(
                             "account_notes_sync_failed",
@@ -172,7 +182,7 @@ class RecoveryCoordinator:
                                 local_credentials,
                                 str(current.get("email") or ""),
                             )
-                            material = self._sync_note_material(int(account_id), {})
+                            material = initial_material or self._sync_note_material(int(account_id), {})
                             if self.settings.automation_require_complete_notes and not material.ready_for_automation:
                                 self._block_automation(
                                     int(account_id),

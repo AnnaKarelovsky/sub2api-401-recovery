@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3 - 2026-10-04
+
+### Account material synchronization
+
+- Newly discovered Sub2API accounts now read and parse their notes during the first 60-second account scan.
+- Already checked accounts are not re-read on every scan; the daily full material sync remains available for note changes.
+- Added regression coverage for immediate first-check behavior and updated deployment documentation.
+- Reordered Docker build inputs so version or application changes do not invalidate the Chromium download layers.
+
 ## 0.4.2 - 2026-10-03
 
 ### Licensing and packaging

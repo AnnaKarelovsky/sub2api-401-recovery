@@ -75,6 +75,19 @@ class MaterialSyncSub2API(ScanSub2API):
         }
 
 
+class NewlyDiscoveredMaterialSub2API(ScanSub2API):
+    def __init__(self):
+        super().__init__()
+        self.get_account_calls = 0
+
+    def get_account(self, account_id):
+        self.get_account_calls += 1
+        return {
+            "id": account_id,
+            "notes": "邮箱: owner@example.com\nOpenAI密码: gpt-pass",
+        }
+
+
 class AuthFailureScanSub2API(ScanSub2API):
     def __init__(self, notes: str):
         super().__init__()
@@ -389,6 +402,25 @@ def test_material_sync_reads_notes_without_creating_recovery_tasks(database, set
     assert credentials["email"] == "owner@example.com"
     assert credentials["openai_password"] == "gpt-pass"
     assert database.list_tasks(limit=10) == []
+
+
+def test_scan_checks_materials_immediately_for_newly_discovered_accounts(database, settings):
+    settings.scan_probe_active_accounts = False
+    sub2api = NewlyDiscoveredMaterialSub2API()
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, sub2api, FakeOAuth(), settings))
+
+    result = coordinator.scan()
+
+    assert result["found"] == 1
+    assert sub2api.get_account_calls == 1
+    mapping = database.get_mapping(7)
+    assert mapping["materials_checked_at"]
+    credentials = database.load_credentials(7)
+    assert credentials["email"] == "owner@example.com"
+    assert credentials["openai_password"] == "gpt-pass"
+
+    coordinator.scan()
+    assert sub2api.get_account_calls == 1
 
 
 def test_automatic_security_failure_is_requeued_with_backoff(database, settings):
