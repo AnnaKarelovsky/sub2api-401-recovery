@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.7 - 2026-10-05
+
+### Hide rate-limited accounts
+
+- Removed HTTP 429 accounts from the console and account page display.
+- Removed the 429 status filter; rate-limited accounts remain tracked in the backend and reappear after the quota recovers.
+
 ## 0.4.6 - 2026-10-05
 
 ### Account table layout

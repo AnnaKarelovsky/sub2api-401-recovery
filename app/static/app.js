@@ -552,8 +552,8 @@ function accountPriority(account) {
 }
 
 function ensureSelectedAccount() {
-  if (state.accounts.some((account) => String(account.sub2api_account_id) === String(state.selectedAccountId))) return;
-  const candidates = [...state.accounts].sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
+  if (state.accounts.some((account) => isVisibleAccount(account) && String(account.sub2api_account_id) === String(state.selectedAccountId))) return;
+  const candidates = state.accounts.filter(isVisibleAccount).sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
   state.selectedAccountId = candidates.length ? String(candidates[0].sub2api_account_id) : "";
 }
 
@@ -566,6 +566,10 @@ function latestTaskForAccount(accountId) {
 function accountStatusForUi(account) {
   const task = latestTaskForAccount(account.sub2api_account_id);
   return task?.status === "queued" && task.stage === "retry_wait" ? "retry_wait" : account.status;
+}
+
+function isVisibleAccount(account) {
+  return accountStatusForUi(account) !== "rate_limited";
 }
 
 function isDeletionEligible(account) {
@@ -588,14 +592,15 @@ function updateDisabledAccountSelectionControls(visibleEligible = []) {
 function renderConsoleAccounts() {
   const search = $("#console-account-search").value.trim().toLowerCase();
   const filter = $("#console-account-filter").value;
-  const items = state.accounts
+  const visibleAccounts = state.accounts.filter(isVisibleAccount);
+  const items = visibleAccounts
     .filter((account) => {
       if (filter && accountStatusForUi(account) !== filter) return false;
       if (!search) return true;
       return [account.email, account.username, account.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
     })
     .sort((left, right) => accountPriority(left) - accountPriority(right) || Number(left.sub2api_account_id) - Number(right.sub2api_account_id));
-  $("#console-account-count").textContent = `${items.length}/${state.accounts.length}`;
+  $("#console-account-count").textContent = `${items.length}/${visibleAccounts.length}`;
   $("#console-accounts-empty").classList.toggle("hidden", items.length > 0);
   const list = $("#console-account-list");
   const scrollTop = list.scrollTop;
@@ -846,7 +851,7 @@ function selectAccount(accountId) {
 function renderAccounts() {
   const filter = $("#account-filter").value;
   const search = $("#account-search").value.trim().toLowerCase();
-  const items = state.accounts.filter((item) => {
+  const items = state.accounts.filter(isVisibleAccount).filter((item) => {
     if (filter && accountStatusForUi(item) !== filter) return false;
     if (!search) return true;
     return [item.email, item.username, item.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
@@ -863,7 +868,7 @@ function renderAccounts() {
     "<th>操作</th>",
   ].join("");
   $("#accounts-empty").classList.toggle("hidden", items.length > 0);
-  $("#accounts-empty").textContent = state.accounts.length && !items.length ? "没有匹配账号。" : "还没有同步到 OpenAI OAuth 账号。";
+  $("#accounts-empty").textContent = state.accounts.some(isVisibleAccount) && !items.length ? "没有匹配账号。" : "当前没有需要显示的账号。";
   $("#accounts-body").innerHTML = items.map((account) => {
     const eligible = isDeletionEligible(account);
     const accountId = String(account.sub2api_account_id);
