@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.5 - 2026-10-05
+
+### Frontend cache refresh
+
+- Bumped the static asset versions so browsers fetch the translated `限额中` label and its styles after the 429 handling fix.
+
 ## 0.4.4 - 2026-10-04
 
 ### 429 handling
