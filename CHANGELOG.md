@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.9 - 2026-10-05
+
+### Dark theme fixes
+
+- Fixed light backgrounds and low-contrast labels in the settings page action bar and section dividers.
+- Styled successful recovery badges for dark mode.
+- Preserved access to deleted-account task logs, added a short network retry for transient dashboard failures, and removed retry actions for deleted accounts.
+
 ## 0.4.8 - 2026-10-05
 
 ### Stale recovery state

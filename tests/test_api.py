@@ -91,6 +91,14 @@ def test_disabled_account_delete_preserves_logs_and_evidence_and_clears_material
         assert runtime.db.get_task_evidence(task_id, evidence_id)["image"] == image
         assert [log["stage"] for log in runtime.db.list_logs(task_id)][-1] == "account_deleted"
 
+        task_response = client.get(f"/api/v1/tasks/{task_id}", headers=headers)
+        assert task_response.status_code == 200
+        assert task_response.json()["sub2api_account_id"] == 302
+        assert task_response.json()["logs"][-1]["stage"] == "account_deleted"
+
+        retry_response = client.post(f"/api/v1/tasks/{task_id}/retry", headers=headers)
+        assert retry_response.status_code == 409
+
 
 def test_disabled_account_delete_refuses_non_disabled_accounts(settings):
     with TestClient(create_app(settings)) as client:

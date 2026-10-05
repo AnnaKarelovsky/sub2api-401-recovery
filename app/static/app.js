@@ -42,10 +42,20 @@ function setTheme(theme) {
 }
 
 async function api(path, options = {}) {
+  const { _networkRetry, ...requestOptions } = options;
   const headers = { ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(path, { ...requestOptions, headers });
+  } catch (error) {
+    if (!_networkRetry) {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      return api(path, { ...requestOptions, _networkRetry: true });
+    }
+    throw new Error("服务连接失败，请确认服务仍在运行后重试。", { cause: error });
+  }
   let payload = {};
   try { payload = await response.json(); } catch (_) { payload = {}; }
   if (response.status === 401) { logout(); throw new Error("登录已过期"); }
@@ -939,7 +949,7 @@ function renderTasks() {
   $("#tasks-empty").textContent = state.tasks.length && !items.length ? "没有匹配任务。" : "暂无恢复任务。";
   $("#tasks-body").innerHTML = items.map(({ task, count }) => `<tr>
     <td><code>${escapeHtml(task.id.slice(0, 8))}</code><div class="task-history">该账号 ${count} 次记录</div></td><td>${escapeHtml(task.email || task.username || task.sub2api_account_id)}</td><td>${escapeHtml(stageLabel(task.stage))}</td><td>${stateBadge(task.status)}</td><td>${escapeHtml(formatDate(task.created_at))}</td>
-    <td><div class="row-actions">${actionButton("detail", task.id, "日志")}${["failed", "manual_required"].includes(task.status) ? actionButton("retry-task", task.id, "重试") : ""}</div></td>
+    <td><div class="row-actions">${actionButton("detail", task.id, "日志")}${["failed", "manual_required"].includes(task.status) && task.account_status !== "account_deleted" ? actionButton("retry-task", task.id, "重试") : ""}</div></td>
   </tr>`).join("");
 }
 
@@ -1177,7 +1187,7 @@ async function openTask(taskId) {
     startTaskDialogRefresh(task);
   } catch (error) {
     activeTaskId = "";
-    alert(error.message);
+    alert(error.message || "日志暂时无法读取，请稍后重试。");
   }
 }
 

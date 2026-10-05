@@ -829,6 +829,7 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT t.*, m.email, m.username,
+                    m.status AS account_status,
                     EXISTS (SELECT 1 FROM task_evidence e WHERE e.task_id=t.id) AS has_evidence
                 FROM recovery_tasks t
                 LEFT JOIN account_mapping m ON m.sub2api_account_id=t.sub2api_account_id
