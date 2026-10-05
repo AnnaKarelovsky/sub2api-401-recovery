@@ -130,6 +130,19 @@ class RateLimitScanSub2API(ScanSub2API):
             }
         ]
 
+
+class FreshRemoteCredentialsSub2API(ScanSub2API):
+    def __init__(self):
+        super().__init__()
+        self.accounts = [
+            {
+                "id": 7,
+                "email": "present@example.com",
+                "status": "active",
+                "credentials": {"expires_at": "2099-01-01T00:00:00Z"},
+            }
+        ]
+
 class FakeOAuth:
     def refresh_token(self, refresh_token, previous=None):
         return TokenSet(
@@ -276,6 +289,37 @@ def test_scan_marks_429_as_rate_limited_without_creating_recovery_task(database,
     mapping = database.get_mapping(316)
     assert mapping["status"] == "rate_limited"
     assert mapping["failure_class"] == FailureClass.RATE_LIMIT.value
+
+
+def test_scan_clears_stale_material_block_when_remote_credentials_are_current(database, settings):
+    settings.scan_probe_active_accounts = False
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 7, "email": "present@example.com", "status": "active"}
+    )
+    database.save_credentials(
+        7,
+        {"email": "present@example.com", "expires_at": "2000-01-01T00:00:00Z"},
+    )
+    database.mark_materials_checked(7)
+    database.update_account_state(
+        7,
+        status="automation_blocked",
+        failure_class=FailureClass.AUTH_FAILURE.value,
+        failure_reason="Automatic authorization requires: OpenAI 密码",
+    )
+
+    coordinator = RecoveryCoordinator(
+        RecoveryRuntime(database, FreshRemoteCredentialsSub2API(), FakeOAuth(), settings)
+    )
+
+    result = coordinator.scan()
+
+    assert result["auth_failures"] == 0
+    assert result["queued"] == 0
+    mapping = database.get_mapping(7)
+    assert mapping["status"] == "healthy"
+    assert mapping["failure_class"] is None
+    assert mapping["failure_reason"] is None
 
 
 def test_manual_recovery_rejects_a_rate_limited_account(database, settings):

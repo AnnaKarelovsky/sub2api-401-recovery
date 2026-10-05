@@ -99,8 +99,10 @@ class RecoveryCoordinator:
                             {"account_id": int(account_id), "reason": safe_error(exc)},
                         )
                 classification_snapshot = dict(raw)
-                merged_credentials = dict(raw.get("credentials") or {})
-                merged_credentials.update(local_credentials)
+                # Sub2API's current credential metadata is authoritative. Local
+                # credentials may be older than a token refresh performed upstream.
+                merged_credentials = dict(local_credentials)
+                merged_credentials.update(raw.get("credentials") or {})
                 classification_snapshot["credentials"] = merged_credentials
                 classification = classify_account_snapshot(classification_snapshot)
                 if current.get("status") in {"account_disabled", "account_replaced"}:
@@ -156,7 +158,13 @@ class RecoveryCoordinator:
                         failure_reason=classification.reason,
                     )
                 elif snapshot.get("status") in {"active", "healthy"}:
-                    if current and current.get("status") in {"unknown", "rate_limited"}:
+                    if current and current.get("status") in {
+                        "unknown",
+                        "rate_limited",
+                        "automation_blocked",
+                        "auth_failed",
+                        "observed",
+                    }:
                         self.db.update_account_state(
                             int(account_id), status="healthy", failure_class=None, failure_reason=None
                         )

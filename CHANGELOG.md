@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.8 - 2026-10-05
+
+### Stale recovery state
+
+- Treats current Sub2API credential metadata as authoritative during scans, avoiding false 401 detection from expired local token metadata.
+- Clears stale `自动恢复已阻止` state when the current account check is healthy.
+
 ## 0.4.7 - 2026-10-05
 
 ### Hide rate-limited accounts
