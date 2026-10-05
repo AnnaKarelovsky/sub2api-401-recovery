@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.10 - 2026-10-05
+
+### Deleted account detection
+
+- Treats `get_account` HTTP 404 / `account not found` as a deleted Sub2API account.
+- Hides retry actions for both newly detected and historical missing-account tasks.
+- Keeps historical logs and evidence readable while rejecting backend retry attempts.
+
 ## 0.4.9 - 2026-10-05
 
 ### Dark theme fixes

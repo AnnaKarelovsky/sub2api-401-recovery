@@ -476,6 +476,21 @@ class Database:
                 )
         return max(0, int(cursor.rowcount))
 
+    def mark_account_deleted(self, account_id: int, reason: str) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_mapping SET status='account_deleted', remote_present=0,
+                    failure_class='ACCOUNT_ERROR', failure_reason=?,
+                    email_password_encrypted=NULL, openai_password_encrypted=NULL,
+                    totp_secret_encrypted=NULL, credentials_encrypted=NULL,
+                    updated_at=? WHERE sub2api_account_id=?
+                """,
+                (safe_message(reason), now, account_id),
+            )
+            conn.execute("DELETE FROM oauth_sessions WHERE sub2api_account_id=?", (account_id,))
+
     def get_mapping(self, account_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -829,7 +844,12 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT t.*, m.email, m.username,
-                    m.status AS account_status,
+                    CASE
+                        WHEN m.status='account_deleted'
+                          OR (t.error_reason LIKE '%get_account: account not found%')
+                        THEN 'account_deleted'
+                        ELSE m.status
+                    END AS account_status,
                     EXISTS (SELECT 1 FROM task_evidence e WHERE e.task_id=t.id) AS has_evidence
                 FROM recovery_tasks t
                 LEFT JOIN account_mapping m ON m.sub2api_account_id=t.sub2api_account_id

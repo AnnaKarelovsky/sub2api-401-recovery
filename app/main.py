@@ -199,7 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             runtime.close()
 
-    app = FastAPI(title=settings.app_name, version="0.4.9", lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, version="0.4.10", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -597,7 +597,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not item:
             raise HTTPException(status_code=404, detail="task not found")
         mapping = rt.db.get_mapping(int(item["sub2api_account_id"]))
-        if mapping and mapping.get("status") == "account_deleted":
+        account_missing = "get_account: account not found" in str(item.get("error_reason") or "")
+        if (mapping and mapping.get("status") == "account_deleted") or account_missing:
+            if mapping and mapping.get("status") != "account_deleted":
+                rt.db.mark_account_deleted(
+                    int(item["sub2api_account_id"]),
+                    "Sub2API account no longer exists (404)",
+                )
             raise HTTPException(status_code=409, detail="该账号已删除，仅保留历史日志，不能再次重试")
         if rt.db.force_retry_task(task_id):
             return {"task_id": task_id, "created": False}

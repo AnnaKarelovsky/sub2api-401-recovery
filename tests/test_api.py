@@ -133,6 +133,32 @@ def test_disabled_account_delete_refuses_non_disabled_accounts(settings):
         assert deleted_remote_ids == []
 
 
+def test_missing_account_task_is_not_retryable_and_is_marked_deleted(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_account_snapshot(
+            {"sub2api_account_id": 279, "email": "missing@example.com", "status": "failed"}
+        )
+        task_id, _ = runtime.db.create_task(279, trigger="automatic-scan")
+        runtime.db.finish_task(
+            task_id,
+            status="failed",
+            stage="failed",
+            failure_class="UNKNOWN",
+            error_reason="get_account: account not found",
+        )
+
+        tasks = client.get("/api/v1/tasks", headers=headers)
+        task = next(item for item in tasks.json()["items"] if item["id"] == task_id)
+        assert task["account_status"] == "account_deleted"
+
+        retry = client.post(f"/api/v1/tasks/{task_id}/retry", headers=headers)
+        assert retry.status_code == 409
+        assert runtime.db.get_mapping(279)["status"] == "account_deleted"
+
+
 def test_dashboard_settings_are_encrypted_and_reloadable(settings):
     with TestClient(create_app(settings)) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})

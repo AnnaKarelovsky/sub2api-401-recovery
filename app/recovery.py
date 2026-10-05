@@ -27,6 +27,7 @@ class RecoveryFailure(Exception):
         classification: Classification | None = None,
         retryable: bool = False,
         needs_reauthorization: bool = False,
+        account_deleted: bool = False,
         technical_detail: dict[str, Any] | None = None,
     ):
         super().__init__(reason)
@@ -34,6 +35,7 @@ class RecoveryFailure(Exception):
         self.classification = classification or classify_failure(message=reason)
         self.retryable = retryable
         self.needs_reauthorization = needs_reauthorization
+        self.account_deleted = account_deleted
         self.technical_detail = dict(technical_detail or {})
 
 
@@ -675,13 +677,17 @@ class RecoveryCoordinator:
                 self.db.finish_task(
                     task_id,
                     status="failed",
-                    stage="failed",
+                    stage="account_deleted" if exc.account_deleted else "failed",
                     failure_class=exc.classification.category.value,
                     error_reason=exc.reason,
                 )
                 self.db.update_account_state(
                     account_id,
-                    status="auth_failed" if exc.classification.category == FailureClass.AUTH_FAILURE else "failed",
+                    status=(
+                        "account_deleted"
+                        if exc.account_deleted
+                        else ("auth_failed" if exc.classification.category == FailureClass.AUTH_FAILURE else "failed")
+                    ),
                     failure_class=exc.classification.category.value,
                     failure_reason=exc.reason,
                 )
@@ -711,6 +717,15 @@ class RecoveryCoordinator:
         try:
             self._sync_note_material(account_id, {})
         except Sub2APIError as exc:
+            if _is_missing_sub2api_account(exc):
+                reason = "Sub2API account no longer exists (404)"
+                self.db.mark_account_deleted(account_id, reason)
+                raise RecoveryFailure(
+                    reason,
+                    classification=Classification(FailureClass.ACCOUNT_ERROR, reason, False),
+                    account_deleted=True,
+                    technical_detail=_sub2api_technical_detail(exc),
+                ) from exc
             raise RecoveryFailure(
                 safe_error(exc),
                 classification=exc.classification,
@@ -1623,6 +1638,14 @@ def _sub2api_technical_detail(error: Sub2APIError) -> dict[str, Any]:
         "classification": error.classification.category.value if error.classification else None,
         "retryable": error.retryable,
     }
+
+
+def _is_missing_sub2api_account(error: Sub2APIError) -> bool:
+    return (
+        error.status_code == 404
+        and error.operation == "get_account"
+        and "account not found" in error.reason.lower()
+    )
 
 
 def _oauth_technical_detail(error: OAuthError) -> dict[str, Any]:
