@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.12 - 2026-10-07
+
+### Mailbox password interaction
+
+- Replaced text reveal/copy controls with a familiar eye toggle: passwords start hidden and can be shown on demand.
+- Clicking a revealed password copies only the password; the separate copy button was removed.
+- Removed redundant mailbox-source helper text from the email column.
+
 ## 0.4.11 - 2026-10-07
 
 ### Mailbox pool

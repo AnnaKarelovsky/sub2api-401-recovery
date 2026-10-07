@@ -180,8 +180,13 @@ td { border-top: 1px solid var(--line); padding: 14px 20px; vertical-align: midd
 tr:hover td { background: var(--paper-soft); }
 .account-name { font-weight: 750; }
 .account-sub { color: var(--muted); font-size: 12px; }
-.mailbox-password { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
-.mailbox-password code { color: var(--ink); font-size: 12px; min-width: 92px; overflow-wrap: anywhere; }
+.mailbox-password { align-items: center; display: grid; gap: 7px; grid-template-columns: minmax(0, 1fr) 30px; min-height: 28px; width: 190px; }
+.mailbox-password code { color: var(--ink); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-password-value { background: transparent; border: 0; color: var(--ink); cursor: copy; font: inherit; font-size: 12px; min-width: 0; overflow: hidden; padding: 2px 0; text-align: left; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.mailbox-password-value:hover, .mailbox-password-value:focus-visible { color: var(--teal-dark); text-decoration: underline; }
+.mailbox-visibility { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--muted); display: inline-flex; height: 28px; justify-content: center; padding: 4px; width: 30px; }
+.mailbox-visibility:hover, .mailbox-visibility:focus-visible { border-color: var(--teal); color: var(--teal-dark); outline: none; }
+.mailbox-visibility svg { fill: none; height: 16px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; width: 16px; }
 .mailbox-state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; white-space: nowrap; }
 .mailbox-state.ready { background: #e6f4ed; color: var(--green); }
 .mailbox-state.missing { background: #fff7d8; color: #8a6512; }

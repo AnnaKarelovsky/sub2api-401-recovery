@@ -910,6 +910,13 @@ function mailboxSourceLabel(mailbox) {
   return `Sub2API #${mailbox.source_account_id}`;
 }
 
+function mailboxEyeIcon(revealed) {
+  if (revealed) {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-4.558 5.568"></path><path d="M14.084 14.084a3 3 0 0 1-4.168-4.168"></path><path d="M17.479 17.479A10.75 10.75 0 0 1 2.062 12.348a1 1 0 0 1 0-.696A10.75 10.75 0 0 1 5.58 6.42"></path><line x1="2" x2="22" y1="2" y2="22"></line></svg>`;
+}
+
 function renderMailboxes() {
   const search = $("#mailbox-search").value.trim().toLowerCase();
   const items = state.mailboxes.filter((mailbox) => !search || String(mailbox.email || "").toLowerCase().includes(search));
@@ -919,9 +926,15 @@ function renderMailboxes() {
     const secret = state.mailboxSecrets.get(id);
     const hasPassword = Boolean(mailbox.has_password);
     const status = hasPassword ? "可用" : "待补密码";
+    const passwordValue = secret
+      ? `<button class="mailbox-password-value" type="button" data-mailbox-action="copy" data-id="${escapeHtml(id)}" title="点击复制密码">${escapeHtml(secret.password || "（空密码）")}</button>`
+      : `<code>••••••••••</code>`;
+    const passwordAction = hasPassword
+      ? `<button class="mailbox-visibility" type="button" data-mailbox-action="reveal" data-id="${escapeHtml(id)}" aria-label="${secret ? "隐藏密码" : "显示密码"}" title="${secret ? "隐藏密码" : "显示密码"}">${mailboxEyeIcon(Boolean(secret))}</button>`
+      : "";
     return `<tr>
-      <td><div class="account-name">${escapeHtml(mailbox.email)}</div><div class="account-sub">${escapeHtml(mailbox.source_account_id ? "独立保留，不随账号删除移除" : "手动保存")}</div></td>
-      <td><div class="mailbox-password"><code>${secret ? escapeHtml(secret.password || "（空密码）") : (hasPassword ? "••••••••••" : "未保存")}</code>${hasPassword ? `<button class="mini-button" type="button" data-mailbox-action="reveal" data-id="${escapeHtml(id)}">${secret ? "隐藏" : "显示"}</button>${secret ? `<button class="mini-button" type="button" data-mailbox-action="copy" data-id="${escapeHtml(id)}">复制</button>` : ""}` : ""}</div></td>
+      <td><div class="account-name">${escapeHtml(mailbox.email)}</div></td>
+      <td><div class="mailbox-password">${hasPassword ? passwordValue : "<code>未保存</code>"}${passwordAction}</div></td>
       <td><span class="account-sub">${escapeHtml(mailboxSourceLabel(mailbox))}</span></td>
       <td><span class="mailbox-state ${hasPassword ? "ready" : "missing"}">${status}</span></td>
       <td>${escapeHtml(formatDate(mailbox.updated_at))}</td>
@@ -950,7 +963,7 @@ async function loadMailboxSecret(mailboxId) {
 
 async function copyMailboxSecret(mailboxId) {
   const secret = state.mailboxSecrets.get(String(mailboxId)) || await loadMailboxSecret(mailboxId);
-  const value = `${secret.email}\n${secret.password}`;
+  const value = secret.password;
   try {
     await navigator.clipboard.writeText(value);
   } catch (_) {
@@ -975,7 +988,7 @@ async function handleMailboxAction(action, mailboxId) {
       renderMailboxes();
     } else if (action === "copy") {
       await copyMailboxSecret(mailboxId);
-      $("#service-status").textContent = "邮箱凭据已复制";
+      $("#service-status").textContent = "密码已复制";
     } else if (action === "edit") {
       openMailboxDialog(mailboxId);
     } else if (action === "delete") {
