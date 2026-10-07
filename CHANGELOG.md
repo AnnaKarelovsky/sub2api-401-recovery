@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.14 - 2026-10-07
+
+### Dashboard typography
+
+- Unified typography tokens across the console, account, mailbox, log, and settings views.
+- Standardized page titles, panel headings, body text, labels, metadata, form controls, table cells, and log details.
+- Normalized form-control line heights and refreshed static asset versions to prevent stale CSS from masking the change.
+
 ## 0.4.13 - 2026-10-07
 
 ### Mailbox pool filtering
