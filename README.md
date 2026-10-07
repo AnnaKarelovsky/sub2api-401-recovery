@@ -61,7 +61,7 @@ Mailbox code and TOTP when requested
 PKCE exchange -> apply credentials -> verify -> schedulable
 ```
 
-When a 401 is already confirmed, the recovery worker skips native refresh and the old refresh-token path and starts the OAuth flow directly. Non-401 recovery paths retain their separate handling.
+When a 401 is confirmed, the recovery worker starts browser OAuth reauthorization directly. Non-401 recovery paths retain their separate handling.
 
 ## Dashboard
 
@@ -106,7 +106,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.15/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.16/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```

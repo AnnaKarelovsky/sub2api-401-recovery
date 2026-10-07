@@ -752,7 +752,7 @@ class RecoveryCoordinator:
             self._log(
                 task_id,
                 "automatic_reauthorization",
-                "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow",
+                "Sub2API confirmed OAuth 401; starting OAuth reauthorization",
             )
             self._mark_manual_required(
                 task_id,

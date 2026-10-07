@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.16 - 2026-10-07
+
+### OAuth recovery log cleanup
+
+- Replaced the 401 transition log with a concise OAuth reauthorization message, removing references to legacy refresh paths.
+- Historical tasks containing the previous message now display the cleaned wording without altering their stored audit records.
+
 ## 0.4.15 - 2026-10-07
 
 ### Recovery log typography

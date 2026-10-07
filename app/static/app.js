@@ -5,7 +5,8 @@ const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "skipped"]);
-const DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow";
+const DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed OAuth 401; starting OAuth reauthorization";
+const LEGACY_DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow";
 const RECOVERY_FLOW = [
   { key: "detect", label: "确认认证异常", stages: ["scan", "probe"], description: "读取 Sub2API 返回的账号状态，确认是否需要恢复。" },
   { key: "credentials", label: "读取账号材料", stages: ["sync"], description: "读取备注和加密凭据，敏感值不会显示在页面。" },
@@ -260,7 +261,8 @@ function humanizeLogMessage(log) {
     "Clearing Sub2API error state and restoring schedulability": "正在清理错误状态并恢复账号可用性。",
     "Automated OAuth callback completed": "自动授权回调已完成。",
     "Starting automated OAuth browser recovery": "正在启动浏览器自动授权。",
-    [DIRECT_OAUTH_401_MESSAGE]: "Sub2API 已确认 OAuth 401，跳过原生刷新和 refresh token，直接开始 OAuth 重新授权。",
+    [DIRECT_OAUTH_401_MESSAGE]: "Sub2API 已确认 OAuth 401，开始重新授权。",
+    [LEGACY_DIRECT_OAUTH_401_MESSAGE]: "Sub2API 已确认 OAuth 401，开始重新授权。",
     "Opening the OpenAI authorization page": "正在打开 OpenAI 授权页面。",
     "OpenAI authorization page loaded": "OpenAI 授权页面已打开。",
     "Submitting the account email": "正在提交账号邮箱。",
@@ -629,7 +631,7 @@ function renderConsoleAccounts() {
 
 function recoveryTimelineForTask(task) {
   const account = state.accounts.find((item) => String(item.sub2api_account_id) === String(task?.sub2api_account_id));
-  const directOAuth401 = task?.logs?.some((log) => log.message === DIRECT_OAUTH_401_MESSAGE)
+  const directOAuth401 = task?.logs?.some((log) => [DIRECT_OAUTH_401_MESSAGE, LEGACY_DIRECT_OAUTH_401_MESSAGE].includes(log.message))
     || task?.failure_class === "401_AUTH_FAILURE"
     || account?.failure_class === "401_AUTH_FAILURE";
   return directOAuth401

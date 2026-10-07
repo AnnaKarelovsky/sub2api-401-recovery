@@ -222,10 +222,13 @@ def test_confirmed_401_skips_both_refresh_paths_and_starts_oauth(database, setti
     assert sub2api.native_refresh_calls == 0
     assert oauth.refresh_calls == 0
     assert not any(log["stage"] in {"native_refresh", "refresh_token"} for log in database.list_logs(task_id))
-    assert any(
-        "skipping native and refresh-token attempts" in log["message"]
+    direct_oauth_logs = [
+        log["message"]
         for log in database.list_logs(task_id)
-    )
+        if log["stage"] == "automatic_reauthorization"
+    ]
+    assert "Sub2API confirmed OAuth 401; starting OAuth reauthorization" in direct_oauth_logs
+    assert not any("native" in message or "refresh-token" in message for message in direct_oauth_logs)
 
 
 class ReplacementOAuth:
