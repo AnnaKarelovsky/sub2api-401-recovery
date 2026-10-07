@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.15 - 2026-10-07
+
+### Recovery log typography
+
+- Rendered recovery task IDs with the same interface font as the surrounding table instead of the browser's default monospace code font.
+- Kept technical diagnostic values in the dedicated technical-details area monospace.
+
 ## 0.4.14 - 2026-10-07
 
 ### Dashboard typography

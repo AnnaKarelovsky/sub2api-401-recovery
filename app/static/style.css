@@ -203,6 +203,7 @@ tr:hover td { background: var(--paper-soft); }
 .mailbox-state.ready { background: #e6f4ed; color: var(--green); }
 .mailbox-state.missing { background: #fff7d8; color: #8a6512; }
 .danger-text { color: var(--red) !important; }
+.task-id { color: var(--ink); display: inline-block; font-family: inherit; font-size: var(--font-body); font-weight: 650; line-height: var(--line-body); }
 .task-history { color: var(--muted); font-size: var(--font-meta); margin-top: 3px; }
 .state { border-radius: 99px; display: inline-block; font-size: var(--font-label); font-weight: 750; padding: 4px 9px; white-space: nowrap; }
 .state.healthy { background: #e6f4ed; color: var(--green); }
