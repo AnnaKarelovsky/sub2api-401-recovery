@@ -27,6 +27,31 @@ def test_credentials_are_encrypted_and_not_returned(database):
     assert database.load_credentials(8)["refresh_token"] == "refresh-secret"
 
 
+def test_mailbox_pool_survives_account_deletion_and_keeps_password_encrypted(database):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 88, "email": "mailbox@example.com", "status": "active"}
+    )
+    database.save_credentials(
+        88,
+        {"email": "mailbox@example.com", "email_password": "mail-secret"},
+    )
+
+    mailboxes = database.list_mailboxes()
+    assert len(mailboxes) == 1
+    mailbox = mailboxes[0]
+    assert mailbox["email"] == "mailbox@example.com"
+    assert mailbox["has_password"] == 1
+    assert "mail-secret" not in str(database.get_mailbox(mailbox["id"]))
+
+    database.mark_account_deleted(88, "Sub2API account no longer exists (404)")
+
+    assert database.get_mapping(88)["status"] == "account_deleted"
+    assert database.get_mailbox_secret(mailbox["id"]) == {
+        "email": "mailbox@example.com",
+        "password": "mail-secret",
+    }
+
+
 def test_stale_running_tasks_are_requeued_after_restart(database):
     database.upsert_account_snapshot({"sub2api_account_id": 12, "status": "auth_failed"})
     task_id, _ = database.create_task(12, trigger="scan")

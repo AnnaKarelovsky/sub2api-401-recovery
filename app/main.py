@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,11 @@ class AccountEnrollmentCreate(BaseModel):
     openai_password: str = Field(min_length=1, max_length=1000)
     totp_secret: str = Field(default="", max_length=500)
     name: str = Field(default="", max_length=120)
+
+
+class MailboxPayload(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(default="", max_length=1000)
 
 
 class DeleteDisabledAccountsRequest(BaseModel):
@@ -199,7 +204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             runtime.close()
 
-    app = FastAPI(title=settings.app_name, version="0.4.10", lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, version="0.4.11", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -318,6 +323,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if status_filter:
             items = [item for item in items if item.get("status") == status_filter]
         return {"items": items, "total": len(items)}
+
+    @app.get("/api/v1/mailboxes")
+    def mailboxes(
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        items = rt.db.list_mailboxes()
+        return {"items": items, "total": len(items)}
+
+    @app.post("/api/v1/mailboxes", status_code=201)
+    def create_mailbox(
+        payload: MailboxPayload,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        try:
+            mailbox_id = rt.db.upsert_mailbox(payload.email, payload.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"id": mailbox_id}
+
+    @app.put("/api/v1/mailboxes/{mailbox_id}")
+    def update_mailbox(
+        mailbox_id: str,
+        payload: MailboxPayload,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        if not rt.db.get_mailbox(mailbox_id):
+            raise HTTPException(status_code=404, detail="mailbox not found")
+        try:
+            password = payload.password
+            if not password:
+                current = rt.db.get_mailbox_secret(mailbox_id)
+                password = current["password"] if current else ""
+            updated_id = rt.db.upsert_mailbox(payload.email, password)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if updated_id != mailbox_id:
+            rt.db.delete_mailbox(mailbox_id)
+        return {"id": updated_id}
+
+    @app.get("/api/v1/mailboxes/{mailbox_id}/secret")
+    def mailbox_secret(
+        mailbox_id: str,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> JSONResponse:
+        secret = rt.db.get_mailbox_secret(mailbox_id)
+        if not secret:
+            raise HTTPException(status_code=404, detail="mailbox not found")
+        rt.db.record_event(
+            "mailbox_secret_accessed",
+            "Mailbox credentials were revealed from the dashboard",
+            {"mailbox_id": mailbox_id},
+        )
+        return JSONResponse(
+            secret,
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.delete("/api/v1/mailboxes/{mailbox_id}")
+    def delete_mailbox(
+        mailbox_id: str,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        if not rt.db.delete_mailbox(mailbox_id):
+            raise HTTPException(status_code=404, detail="mailbox not found")
+        return {"deleted": True, "id": mailbox_id}
 
     @app.delete("/api/v1/accounts/disabled")
     def delete_disabled_accounts(

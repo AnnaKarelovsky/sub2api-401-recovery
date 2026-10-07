@@ -17,6 +17,7 @@ Sub2API 401 Recovery 是 Sub2API 的配套恢复服务。它通过 Sub2API Admin
 - 自动执行 Chromium OAuth 流程，处理邮箱验证码和 TOTP 验证。
 - 完成 PKCE 授权码交换，把新凭据回写到原 Sub2API 账号并再次校验。
 - Dashboard 展示账号、任务、阶段、重试时间和技术错误详情。
+- 提供独立邮箱池列表，保存邮箱及邮箱密码；密码加密存储，列表默认脱敏，账号删除后仍可保留邮箱记录。
 - 遇到账号被停用或删除页面时保存加密截图，便于人工复核。
 - 提供受保护的手动删除入口，只有在确认账号确实停用后才建议执行。
 
@@ -70,7 +71,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.10`：
+当前发布版为 `v0.4.11`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -95,7 +96,7 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-VERSION=v0.4.10 bash install-release.sh
+VERSION=v0.4.11 bash install-release.sh
 ```
 
 ### 从源码运行
@@ -124,6 +125,10 @@ RECOVERY_ENABLED=true
 SCAN_INTERVAL_SECONDS=60
 MAX_CONCURRENT_RECOVERIES=1
 ```
+
+### 邮箱池
+
+控制台的“邮箱池”页面用于维护可复用邮箱。已有账号备注中的邮箱材料会在服务启动时迁移，之后从账号页面编辑材料或在邮箱池中新增、编辑的邮箱都会独立保存。邮箱密码默认只显示掩码，点击“显示”或“复制”才会通过受保护接口读取明文；删除 Sub2API 账号不会自动删除邮箱池记录。
 
 ### 主动 401 探测
 

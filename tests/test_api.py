@@ -26,6 +26,31 @@ def test_health_login_and_dashboard(settings):
         assert dashboard.json()["sync"]["status"] == "never"
 
 
+def test_mailbox_pool_hides_password_until_explicit_secret_request(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        created = client.post(
+            "/api/v1/mailboxes",
+            headers=headers,
+            json={"email": "pool@example.com", "password": "pool-secret"},
+        )
+        assert created.status_code == 201
+        mailbox_id = created.json()["id"]
+
+        listed = client.get("/api/v1/mailboxes", headers=headers)
+        assert listed.status_code == 200
+        assert "pool-secret" not in listed.text
+        assert listed.json()["items"][0]["has_password"] == 1
+
+        assert client.get(f"/api/v1/mailboxes/{mailbox_id}/secret").status_code == 401
+        secret = client.get(f"/api/v1/mailboxes/{mailbox_id}/secret", headers=headers)
+        assert secret.status_code == 200
+        assert secret.json() == {"email": "pool@example.com", "password": "pool-secret"}
+        assert secret.headers["cache-control"] == "private, no-store"
+
+
 def test_task_evidence_requires_auth_and_is_scoped_to_its_task(settings):
     image = b"\x89PNG\r\n\x1a\naccount-disabled-page"
     with TestClient(create_app(settings)) as client:

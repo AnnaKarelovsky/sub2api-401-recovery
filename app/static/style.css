@@ -180,6 +180,12 @@ td { border-top: 1px solid var(--line); padding: 14px 20px; vertical-align: midd
 tr:hover td { background: var(--paper-soft); }
 .account-name { font-weight: 750; }
 .account-sub { color: var(--muted); font-size: 12px; }
+.mailbox-password { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.mailbox-password code { color: var(--ink); font-size: 12px; min-width: 92px; overflow-wrap: anywhere; }
+.mailbox-state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; white-space: nowrap; }
+.mailbox-state.ready { background: #e6f4ed; color: var(--green); }
+.mailbox-state.missing { background: #fff7d8; color: #8a6512; }
+.danger-text { color: var(--red) !important; }
 .task-history { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .state { border-radius: 99px; display: inline-block; font-size: 12px; font-weight: 750; padding: 4px 9px; white-space: nowrap; }
 .state.healthy { background: #e6f4ed; color: var(--green); }
@@ -281,6 +287,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .material-status.partial { background: rgba(241, 154, 98, .15); color: var(--orange); }
 :root[data-theme="dark"] .material-status.missing { background: rgba(240, 122, 122, .15); color: var(--red); }
 :root[data-theme="dark"] .material-status.unverified { background: rgba(170, 183, 189, .15); color: #b5c1c6; }
+:root[data-theme="dark"] .mailbox-state.ready { background: rgba(104, 208, 157, .16); color: var(--green); }
+:root[data-theme="dark"] .mailbox-state.missing { background: rgba(224, 190, 76, .16); color: #f0cd69; }
 :root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.account_disabled, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .state.account_replaced { background: rgba(91, 193, 205, .15); border-color: rgba(91, 193, 205, .42); color: #8ed9df; }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }

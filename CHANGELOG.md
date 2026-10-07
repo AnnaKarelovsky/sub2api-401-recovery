@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.11 - 2026-10-07
+
+### Mailbox pool
+
+- Added an independent encrypted mailbox pool that preserves reusable email credentials after Sub2API account deletion.
+- Added a list-first dashboard page with masked passwords, explicit reveal/copy actions, add/edit/delete controls, and source-account status.
+- Existing saved email materials are migrated into the mailbox pool on startup; passwords are never returned by the list endpoint.
+
 ## 0.4.10 - 2026-10-05
 
 ### Deleted account detection

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261005-dark-theme-fixes" />
+    <link rel="stylesheet" href="/static/style.css?v=20261007-mailbox-pool" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -28,6 +28,7 @@
             <nav class="main-nav">
               <button class="nav-item active" type="button" data-view-target="console"><span class="nav-glyph" aria-hidden="true">⌂</span><span>恢复控制台</span></button>
               <button class="nav-item" type="button" data-view-target="accounts"><span class="nav-glyph" aria-hidden="true">▤</span><span>账号</span></button>
+              <button class="nav-item" type="button" data-view-target="mailboxes"><span class="nav-glyph" aria-hidden="true">@</span><span>邮箱池</span></button>
               <button class="nav-item" type="button" data-view-target="logs"><span class="nav-glyph" aria-hidden="true">≡</span><span>恢复日志</span></button>
               <button class="nav-item" type="button" data-view-target="settings"><span class="nav-glyph" aria-hidden="true">⚙</span><span>运行配置</span></button>
             </nav>
@@ -75,6 +76,12 @@
             <div class="section-heading"><div><h3>恢复日志</h3><p class="muted">每个账号只显示最新任务，历史记录仍保留；打开日志可查看具体阶段和技术详情。</p></div><div class="section-tools"><input id="task-search" type="search" placeholder="搜索任务、邮箱或 ID" aria-label="搜索恢复任务" /></div></div>
             <div class="table-wrap"><table><thead><tr><th>任务</th><th>账号</th><th>阶段</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="tasks-body"></tbody></table></div>
             <div id="tasks-empty" class="empty hidden">暂无恢复任务。</div>
+          </section>
+
+          <section id="view-mailboxes" class="view-section content-section hidden">
+            <div class="section-heading"><div><h3>邮箱池</h3><p class="muted">独立保存可复用邮箱；密码加密存储，列表不会直接返回明文。</p></div><div class="section-tools"><input id="mailbox-search" type="search" placeholder="搜索邮箱" aria-label="搜索邮箱池" /><button id="new-mailbox-button" class="button primary" type="button">新增邮箱</button></div></div>
+            <div class="table-wrap"><table><thead><tr><th>邮箱</th><th>邮箱密码</th><th>来源账号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="mailboxes-body"></tbody></table></div>
+            <div id="mailboxes-empty" class="empty hidden">还没有保存邮箱。</div>
           </section>
 
           <section id="settings-section" class="view-section content-section hidden">
@@ -156,6 +163,15 @@
         <p id="profile-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20261005-dark-theme-fixes" defer></script>
+    <dialog id="mailbox-dialog">
+      <form method="dialog" class="dialog-panel compact" id="mailbox-form">
+        <div class="dialog-heading"><div><p class="eyebrow">MAILBOX POOL</p><h3 id="mailbox-dialog-title">新增邮箱</h3></div><button class="icon-button" type="button" id="close-mailbox-icon" aria-label="关闭">×</button></div>
+        <label>邮箱<input id="mailbox-email" type="email" autocomplete="username" maxlength="320" required /></label>
+        <label>邮箱密码<input id="mailbox-password" type="password" autocomplete="new-password" maxlength="1000" /><span class="muted field-help">编辑时留空表示保留已有密码。</span></label>
+        <div class="dialog-actions"><button class="button secondary" value="cancel" type="button" id="cancel-mailbox">取消</button><button class="button primary" type="submit" id="save-mailbox">保存</button></div>
+        <p id="mailbox-dialog-status" class="error-text"></p>
+      </form>
+    </dialog>
+    <script src="/static/app.js?v=20261007-mailbox-pool" defer></script>
   </body>
 </html>

@@ -84,6 +84,18 @@ class Database:
                         updated_at TEXT NOT NULL
                     );
 
+                    CREATE TABLE IF NOT EXISTS mailbox_pool (
+                        id TEXT PRIMARY KEY,
+                        email TEXT NOT NULL UNIQUE,
+                        password_encrypted TEXT,
+                        source_account_id INTEGER,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_accessed_at TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_mailbox_pool_updated
+                        ON mailbox_pool(updated_at, email);
+
                     CREATE TABLE IF NOT EXISTS recovery_tasks (
                         id TEXT PRIMARY KEY,
                         sub2api_account_id INTEGER NOT NULL,
@@ -232,6 +244,7 @@ class Database:
                     conn.execute(
                         "ALTER TABLE account_mapping ADD COLUMN last_upstream_probe_at TEXT"
                     )
+                self._migrate_mailbox_pool(conn)
                 runtime_meta_columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(runtime_settings_meta)")
                 }
@@ -250,6 +263,36 @@ class Database:
                     )
                     """
                 )
+
+    def _migrate_mailbox_pool(self, conn: sqlite3.Connection) -> None:
+        """Copy existing email materials before account deletion can remove them."""
+        rows = conn.execute(
+            """
+            SELECT sub2api_account_id, email, email_password_encrypted
+            FROM account_mapping
+            WHERE TRIM(email) <> ''
+            """
+        ).fetchall()
+        now = utc_now()
+        for row in rows:
+            email = str(row["email"] or "").strip().lower()
+            if not email:
+                continue
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO mailbox_pool(
+                    id, email, password_encrypted, source_account_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    email,
+                    row["email_password_encrypted"],
+                    int(row["sub2api_account_id"]),
+                    now,
+                    now,
+                ),
+            )
 
     def load_runtime_settings(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -617,6 +660,96 @@ class Database:
                     account_id,
                 ),
             )
+        credential_email = str(email or credentials.get("email") or "").strip().lower()
+        if credential_email:
+            self.upsert_mailbox(
+                credential_email,
+                known["email_password"],
+                source_account_id=account_id,
+            )
+
+    def upsert_mailbox(
+        self,
+        email: str,
+        password: str | None = None,
+        *,
+        source_account_id: int | None = None,
+    ) -> str:
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email or "@" not in normalized_email:
+            raise ValueError("mailbox email is invalid")
+        now = utc_now()
+        encrypted_password = self.secret_box.encrypt(password.strip()) if password and password.strip() else None
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT id, password_encrypted FROM mailbox_pool WHERE email=?",
+                (normalized_email,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE mailbox_pool SET
+                        password_encrypted=COALESCE(?, password_encrypted),
+                        source_account_id=COALESCE(?, source_account_id), updated_at=?
+                    WHERE id=?
+                    """,
+                    (encrypted_password, source_account_id, now, str(existing["id"])),
+                )
+                return str(existing["id"])
+            mailbox_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO mailbox_pool(
+                    id, email, password_encrypted, source_account_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (mailbox_id, normalized_email, encrypted_password, source_account_id, now, now),
+            )
+            return mailbox_id
+
+    def list_mailboxes(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.email, p.source_account_id, p.created_at, p.updated_at,
+                    p.last_accessed_at, (p.password_encrypted IS NOT NULL) AS has_password,
+                    m.status AS source_account_status, m.remote_present AS source_account_present
+                FROM mailbox_pool p
+                LEFT JOIN account_mapping m ON m.sub2api_account_id=p.source_account_id
+                ORDER BY p.updated_at DESC, p.email
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_mailbox(self, mailbox_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mailbox_pool WHERE id=?", (mailbox_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_mailbox_secret(self, mailbox_id: str) -> dict[str, str] | None:
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT email, password_encrypted FROM mailbox_pool WHERE id=?",
+                (mailbox_id,),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE mailbox_pool SET last_accessed_at=? WHERE id=?",
+                (now, mailbox_id),
+            )
+        return {
+            "email": str(row["email"]),
+            "password": self.secret_box.decrypt(row["password_encrypted"]) or "",
+        }
+
+    def delete_mailbox(self, mailbox_id: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM mailbox_pool WHERE id=?", (mailbox_id,))
+        return cursor.rowcount == 1
 
     def save_account_material(self, account_id: int, values: dict[str, Any]) -> None:
         """Merge browser-login material without replacing OAuth credentials."""

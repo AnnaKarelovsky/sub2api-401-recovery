@@ -15,12 +15,13 @@ ARG HTTPS_PROXY
 ARG ALL_PROXY
 ARG NO_PROXY
 ARG INSTALL_BROWSER_DEPS=1
+ARG INSTALL_BROWSER=1
 
 RUN pip install --upgrade pip \
     && pip install -c constraints.txt "playwright>=1.48,<2.0"
 
 RUN if [ "$INSTALL_BROWSER_DEPS" = "1" ]; then python -m playwright install-deps chromium; fi
-RUN python -m playwright install chromium
+RUN if [ "$INSTALL_BROWSER" = "1" ]; then python -m playwright install chromium; fi
 
 COPY pyproject.toml ./
 COPY app ./app

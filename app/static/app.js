@@ -1,6 +1,6 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], mailboxes: [], mailboxSecrets: new Map(), editingMailboxId: "", reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
@@ -513,9 +513,10 @@ function collectSettings() {
 async function loadAll() {
   if (dashboardLoadInFlight) return dashboardLoadInFlight;
   dashboardLoadInFlight = (async () => {
-    const [dashboard, accounts, tasks] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80")]);
+    const [dashboard, accounts, tasks, mailboxes] = await Promise.all([api("/api/v1/dashboard"), api("/api/v1/accounts"), api("/api/v1/tasks?limit=80"), api("/api/v1/mailboxes")]);
     state.accounts = accounts.items || [];
     state.tasks = tasks.items || [];
+    state.mailboxes = mailboxes.items || [];
     for (const accountId of state.selectedDisabledAccountIds) {
       const account = state.accounts.find((item) => String(item.sub2api_account_id) === accountId);
       if (!account || !isDeletionEligible(account)) state.selectedDisabledAccountIds.delete(accountId);
@@ -526,6 +527,7 @@ async function loadAll() {
     renderSync(dashboard.sync || {});
     renderConsole();
     renderAccounts();
+    renderMailboxes();
     renderTasks();
     const latestSelectedTask = latestTaskForAccount(state.selectedAccountId);
     const selectedTaskChanged = latestSelectedTask && (!state.selectedTask || String(state.selectedTask.id) !== String(latestSelectedTask.id));
@@ -787,7 +789,7 @@ function renderRecoveryInspector() {
 }
 
 function showView(view) {
-  const views = { console: "#view-console", accounts: "#view-accounts", logs: "#view-logs", settings: "#settings-section" };
+  const views = { console: "#view-console", accounts: "#view-accounts", mailboxes: "#view-mailboxes", logs: "#view-logs", settings: "#settings-section" };
   const target = views[view] ? view : "console";
   state.activeView = target;
   localStorage.setItem("recovery_view", target);
@@ -795,6 +797,7 @@ function showView(view) {
   document.querySelectorAll("[data-view-target]").forEach((button) => button.classList.toggle("active", button.dataset.viewTarget === target));
   if (target === "console") renderConsole();
   if (target === "accounts") renderAccounts();
+  if (target === "mailboxes") renderMailboxes();
   if (target === "logs") renderTasks();
 }
 
@@ -897,6 +900,93 @@ function renderAccounts() {
   </tr>`;
   }).join("");
   updateDisabledAccountSelectionControls(visibleEligible);
+}
+
+function mailboxSourceLabel(mailbox) {
+  if (!mailbox.source_account_id) return "手动添加";
+  if (mailbox.source_account_status === "account_deleted" || mailbox.source_account_present === 0) {
+    return `账号 #${mailbox.source_account_id} 已删除`;
+  }
+  return `Sub2API #${mailbox.source_account_id}`;
+}
+
+function renderMailboxes() {
+  const search = $("#mailbox-search").value.trim().toLowerCase();
+  const items = state.mailboxes.filter((mailbox) => !search || String(mailbox.email || "").toLowerCase().includes(search));
+  $("#mailboxes-empty").classList.toggle("hidden", items.length > 0);
+  $("#mailboxes-body").innerHTML = items.map((mailbox) => {
+    const id = String(mailbox.id);
+    const secret = state.mailboxSecrets.get(id);
+    const hasPassword = Boolean(mailbox.has_password);
+    const status = hasPassword ? "可用" : "待补密码";
+    return `<tr>
+      <td><div class="account-name">${escapeHtml(mailbox.email)}</div><div class="account-sub">${escapeHtml(mailbox.source_account_id ? "独立保留，不随账号删除移除" : "手动保存")}</div></td>
+      <td><div class="mailbox-password"><code>${secret ? escapeHtml(secret.password || "（空密码）") : (hasPassword ? "••••••••••" : "未保存")}</code>${hasPassword ? `<button class="mini-button" type="button" data-mailbox-action="reveal" data-id="${escapeHtml(id)}">${secret ? "隐藏" : "显示"}</button>${secret ? `<button class="mini-button" type="button" data-mailbox-action="copy" data-id="${escapeHtml(id)}">复制</button>` : ""}` : ""}</div></td>
+      <td><span class="account-sub">${escapeHtml(mailboxSourceLabel(mailbox))}</span></td>
+      <td><span class="mailbox-state ${hasPassword ? "ready" : "missing"}">${status}</span></td>
+      <td>${escapeHtml(formatDate(mailbox.updated_at))}</td>
+      <td><div class="row-actions"><button class="mini-button" type="button" data-mailbox-action="edit" data-id="${escapeHtml(id)}">编辑</button><button class="mini-button danger-text" type="button" data-mailbox-action="delete" data-id="${escapeHtml(id)}">删除</button></div></td>
+    </tr>`;
+  }).join("");
+}
+
+function openMailboxDialog(mailboxId = "") {
+  state.editingMailboxId = mailboxId;
+  const mailbox = state.mailboxes.find((item) => String(item.id) === String(mailboxId));
+  $("#mailbox-dialog-title").textContent = mailbox ? "编辑邮箱" : "新增邮箱";
+  $("#mailbox-email").value = mailbox?.email || "";
+  $("#mailbox-password").value = "";
+  $("#mailbox-dialog-status").textContent = "";
+  $("#mailbox-dialog").showModal();
+  $("#mailbox-email").focus();
+}
+
+async function loadMailboxSecret(mailboxId) {
+  const secret = await api(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/secret`);
+  state.mailboxSecrets.set(String(mailboxId), secret);
+  renderMailboxes();
+  return secret;
+}
+
+async function copyMailboxSecret(mailboxId) {
+  const secret = state.mailboxSecrets.get(String(mailboxId)) || await loadMailboxSecret(mailboxId);
+  const value = `${secret.email}\n${secret.password}`;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (_) {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+}
+
+async function handleMailboxAction(action, mailboxId) {
+  const mailbox = state.mailboxes.find((item) => String(item.id) === String(mailboxId));
+  if (!mailbox) return;
+  try {
+    if (action === "reveal") {
+      if (state.mailboxSecrets.has(String(mailboxId))) state.mailboxSecrets.delete(String(mailboxId));
+      else await loadMailboxSecret(mailboxId);
+      renderMailboxes();
+    } else if (action === "copy") {
+      await copyMailboxSecret(mailboxId);
+      $("#service-status").textContent = "邮箱凭据已复制";
+    } else if (action === "edit") {
+      openMailboxDialog(mailboxId);
+    } else if (action === "delete") {
+      if (!window.confirm(`删除邮箱 ${mailbox.email}？此操作不会影响 Sub2API 账号。`)) return;
+      await api(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}`, { method: "DELETE" });
+      state.mailboxSecrets.delete(String(mailboxId));
+      await loadAll();
+    }
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 async function deleteSelectedDisabledAccounts() {
@@ -1220,6 +1310,36 @@ $("#refresh-button").addEventListener("click", async () => {
   finally { button.disabled = false; button.textContent = "刷新"; }
 });
 $("#close-settings").addEventListener("click", () => showView("console"));
+$("#mailbox-search").addEventListener("input", renderMailboxes);
+$("#new-mailbox-button").addEventListener("click", () => openMailboxDialog());
+$("#cancel-mailbox").addEventListener("click", () => $("#mailbox-dialog").close("cancel"));
+$("#close-mailbox-icon").addEventListener("click", () => $("#mailbox-dialog").close("cancel"));
+$("#mailbox-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const email = $("#mailbox-email").value.trim();
+  const password = $("#mailbox-password").value;
+  const payload = { email, password };
+  const mailboxId = state.editingMailboxId;
+  $("#save-mailbox").disabled = true;
+  $("#mailbox-dialog-status").textContent = "保存中...";
+  try {
+    await api(mailboxId ? `/api/v1/mailboxes/${encodeURIComponent(mailboxId)}` : "/api/v1/mailboxes", {
+      method: mailboxId ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    $("#mailbox-dialog").close();
+    state.editingMailboxId = "";
+    await loadAll();
+  } catch (error) {
+    $("#mailbox-dialog-status").textContent = error.message;
+  } finally {
+    $("#save-mailbox").disabled = false;
+  }
+});
+$("#mailboxes-body").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-mailbox-action]");
+  if (button) handleMailboxAction(button.dataset.mailboxAction, button.dataset.id);
+});
 $("#settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#settings-status").textContent = "保存中...";

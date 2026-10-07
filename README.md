@@ -25,6 +25,7 @@ The screenshot below is a sanitized view of a real successful recovery task. It 
 - Completes PKCE authorization-code exchange and applies the new credentials to the original Sub2API account.
 - Verifies the recovered account and restores schedulability.
 - Shows each recovery stage, retry state, technical error, and account-specific history in the Dashboard.
+- Provides an independent mailbox pool for reusable email credentials. Passwords are encrypted at rest, masked in the list, and retained after a Sub2API account is deleted.
 - Captures encrypted screenshots when OpenAI displays an account-deleted or account-disabled page.
 - Provides guarded manual deletion for accounts that have been independently confirmed as disabled.
 
@@ -64,16 +65,19 @@ When a 401 is already confirmed, the recovery worker skips native refresh and th
 
 ## Dashboard
 
-The Dashboard is organized around four views:
+The Dashboard is organized around five views:
 
 - **Recovery console:** select an account, start or retry recovery, watch the current stage, and see the latest readable log entries.
 - **Accounts:** search, sort, inspect materials, check state, and review deletion eligibility.
 - **Recovery logs:** one compact row per task with expandable technical details and retry controls.
+- **Mailbox pool:** a list-first view for adding, editing, revealing, copying, and deleting reusable mailbox credentials independently of Sub2API accounts.
 - **Runtime configuration:** update operational settings and save encrypted configuration profiles.
 
 The console keeps screenshot evidence inside the account log. Sensitive tokens, passwords, mailbox credentials, and TOTP secrets are never rendered in the Dashboard.
 
 ![Recovery logs](docs/screenshots/recovery-logs.png)
+
+The mailbox pool migrates saved email materials during startup. The list endpoint never returns plaintext passwords; an authenticated reveal or copy action reads a single credential on demand and marks the access time. Deleting a Sub2API account does not delete its independent mailbox record.
 
 ## Requirements
 
@@ -102,7 +106,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.10/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.11/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
