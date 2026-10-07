@@ -204,7 +204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             runtime.close()
 
-    app = FastAPI(title=settings.app_name, version="0.4.12", lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, version="0.4.13", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

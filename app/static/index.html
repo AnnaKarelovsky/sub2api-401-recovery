@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261007-mailbox-eye-fixed" />
+    <link rel="stylesheet" href="/static/style.css?v=20261007-mailbox-filter" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -79,9 +79,9 @@
           </section>
 
           <section id="view-mailboxes" class="view-section content-section hidden">
-            <div class="section-heading"><div><h3>邮箱池</h3><p class="muted">独立保存可复用邮箱；密码加密存储，列表不会直接返回明文。</p></div><div class="section-tools"><input id="mailbox-search" type="search" placeholder="搜索邮箱" aria-label="搜索邮箱池" /><button id="new-mailbox-button" class="button primary" type="button">新增邮箱</button></div></div>
+            <div class="section-heading"><div><h3>邮箱池</h3><p class="muted">仅显示已保存密码的可用邮箱；密码加密存储，列表不会直接返回明文。</p></div><div class="section-tools"><input id="mailbox-search" type="search" placeholder="搜索邮箱" aria-label="搜索邮箱池" /><button id="new-mailbox-button" class="button primary" type="button">新增邮箱</button></div></div>
             <div class="table-wrap"><table><thead><tr><th>邮箱</th><th>邮箱密码</th><th>来源账号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="mailboxes-body"></tbody></table></div>
-            <div id="mailboxes-empty" class="empty hidden">还没有保存邮箱。</div>
+            <div id="mailboxes-empty" class="empty hidden">还没有可用邮箱。</div>
           </section>
 
           <section id="settings-section" class="view-section content-section hidden">
@@ -172,6 +172,6 @@
         <p id="mailbox-dialog-status" class="error-text"></p>
       </form>
     </dialog>
-    <script src="/static/app.js?v=20261007-mailbox-eye-fixed" defer></script>
+    <script src="/static/app.js?v=20261007-mailbox-filter" defer></script>
   </body>
 </html>

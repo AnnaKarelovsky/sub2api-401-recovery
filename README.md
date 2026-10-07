@@ -106,7 +106,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.12/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.13/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```

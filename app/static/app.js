@@ -919,7 +919,7 @@ function mailboxEyeIcon(revealed) {
 
 function renderMailboxes() {
   const search = $("#mailbox-search").value.trim().toLowerCase();
-  const items = state.mailboxes.filter((mailbox) => !search || String(mailbox.email || "").toLowerCase().includes(search));
+  const items = state.mailboxes.filter((mailbox) => Boolean(mailbox.has_password) && (!search || String(mailbox.email || "").toLowerCase().includes(search)));
   $("#mailboxes-empty").classList.toggle("hidden", items.length > 0);
   $("#mailboxes-body").innerHTML = items.map((mailbox) => {
     const id = String(mailbox.id);

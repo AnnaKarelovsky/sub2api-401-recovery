@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.13 - 2026-10-07
+
+### Mailbox pool filtering
+
+- The mailbox page now hides records without a saved email password; those records remain stored and are not deleted.
+- Clarified that the list contains only currently usable mailboxes.
+
 ## 0.4.12 - 2026-10-07
 
 ### Mailbox password interaction
