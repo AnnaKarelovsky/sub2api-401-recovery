@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.18 - 2026-10-09
+
+- Rendered release notes as readable headings and lists instead of exposing raw Markdown syntax.
+- Added consistent click-outside-to-close behavior for all modal dialogs.
+- Refreshed the static asset cache key and release deployment defaults.
+
 ## 0.4.17 - 2026-10-09
 
 ### Release deployment updates

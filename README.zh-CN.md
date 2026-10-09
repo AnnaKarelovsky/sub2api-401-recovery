@@ -72,7 +72,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.17`：
+当前发布版为 `v0.4.18`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -99,7 +99,7 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-RECOVERY_VERSION=v0.4.17 bash install-release.sh
+RECOVERY_VERSION=v0.4.18 bash install-release.sh
 ```
 
 发布版登录后会定期检查 GitHub Releases；有新版本时，左侧版本号旁会显示提示。点击版本号可查看发行说明并开始更新。

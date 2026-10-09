@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=release-update-check" />
+    <link rel="stylesheet" href="/static/style.css?v=popup-render-fixes" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
@@ -177,10 +177,10 @@
         <div class="dialog-heading"><div><p class="eyebrow">SERVICE UPDATE</p><h3>版本更新</h3></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
         <div class="version-comparison"><span><span class="muted">当前版本</span><strong id="update-current-version">-</strong></span><span class="version-arrow" aria-hidden="true">→</span><span><span class="muted">最新版本</span><strong id="update-latest-version">检查中</strong></span></div>
         <p id="update-description" class="muted update-description" role="status"></p>
-        <pre id="update-release-notes" class="update-release-notes hidden"></pre>
+        <div id="update-release-notes" class="update-release-notes hidden"></div>
         <div class="dialog-actions"><button id="check-update" class="button secondary" type="button">检查更新</button><a id="release-link" class="button quiet hidden" target="_blank" rel="noreferrer">发行说明</a><button id="start-update" class="button primary" type="button" disabled>立即更新</button></div>
       </form>
     </dialog>
-    <script src="/static/app.js?v=release-update-check" defer></script>
+    <script src="/static/app.js?v=popup-render-fixes" defer></script>
   </body>
 </html>

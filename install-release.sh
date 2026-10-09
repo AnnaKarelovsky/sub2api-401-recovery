@@ -10,7 +10,7 @@ configured_release_version=""
 if [ -f .env ]; then
   configured_release_version="$(sed -n 's/^RECOVERY_VERSION=//p' .env | tail -n 1 | tr -d '\"' | tr -d "'")"
 fi
-release_version="${requested_release_version:-${configured_release_version:-v0.4.17}}"
+release_version="${requested_release_version:-${configured_release_version:-v0.4.18}}"
 if [[ ! "$release_version" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo "Invalid release version: ${release_version}" >&2
   exit 1

@@ -105,7 +105,7 @@ function renderUpdateInfo(info) {
   $("#update-description").textContent = info?.update_available
     ? "新版本已发布。点击更新后服务会短暂重启，账号数据和配置会保留。"
     : (info?.check_error || (info?.update_enabled ? "当前已是最新版本。" : "当前部署方式请使用命令行脚本更新。"));
-  $("#update-release-notes").textContent = info?.release_notes || "";
+  $("#update-release-notes").innerHTML = renderReleaseNotes(info?.release_notes || "");
   $("#update-release-notes").classList.toggle("hidden", !info?.release_notes);
   const releaseLink = $("#release-link");
   releaseLink.href = info?.release_url || "#";
@@ -136,6 +136,50 @@ function openUpdateDialog() {
   if (!state.update) checkForUpdate(true).catch((error) => {
     $("#update-description").textContent = error.message;
   });
+}
+
+function renderInlineReleaseNotes(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return html;
+}
+
+function renderReleaseNotes(markdown) {
+  const lines = String(markdown || "").trim().split(/\r?\n/);
+  if (!lines.length || !lines[0]) return "";
+  const output = [];
+  let listType = "";
+
+  const closeList = () => {
+    if (listType) output.push(`</${listType}>`);
+    listType = "";
+  };
+
+  for (const line of lines) {
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    const unordered = line.match(/^[-*]\s+(.+)$/);
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (!line.trim()) {
+      closeList();
+    } else if (heading) {
+      closeList();
+      output.push(`<h4>${renderInlineReleaseNotes(heading[1])}</h4>`);
+    } else if (unordered || ordered) {
+      const nextType = unordered ? "ul" : "ol";
+      if (listType !== nextType) {
+        closeList();
+        listType = nextType;
+        output.push(`<${listType}>`);
+      }
+      output.push(`<li>${renderInlineReleaseNotes((unordered || ordered)[1])}</li>`);
+    } else {
+      closeList();
+      output.push(`<p>${renderInlineReleaseNotes(line)}</p>`);
+    }
+  }
+  closeList();
+  return output.join("");
 }
 
 function startUpdateStatusPolling() {
@@ -1573,6 +1617,19 @@ document.addEventListener("visibilitychange", () => {
       api(`/api/v1/tasks/${activeTaskId}`).then(renderTaskDetail).catch(() => { $("#task-dialog-status").textContent = "日志暂时无法更新"; });
     }
   }
+});
+
+document.querySelectorAll("dialog").forEach((dialog) => {
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close("backdrop");
+  });
+});
+document.addEventListener("pointerdown", (event) => {
+  const openDialogs = [...document.querySelectorAll("dialog[open]")];
+  const dialog = openDialogs[openDialogs.length - 1];
+  if (!dialog) return;
+  const target = event.target;
+  if (target === dialog || !target.closest?.("dialog[open]")) dialog.close("backdrop");
 });
 
 renderThemeControl(savedTheme);
