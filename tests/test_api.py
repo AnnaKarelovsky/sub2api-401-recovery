@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
+from app.version import APP_VERSION
 
 
 def test_required_evidence_mount_must_not_share_database_filesystem(settings, tmp_path):
@@ -17,6 +18,9 @@ def test_required_evidence_mount_must_not_share_database_filesystem(settings, tm
 def test_health_login_and_dashboard(settings):
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/v1/healthz").status_code == 200
+        homepage = client.get("/").text
+        assert f"v{APP_VERSION}" in homepage
+        assert "__APP_VERSION__" not in homepage
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
         assert login.status_code == 200
         token = login.json()["access_token"]

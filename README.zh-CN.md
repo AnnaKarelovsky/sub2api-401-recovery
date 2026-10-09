@@ -17,6 +17,7 @@ Sub2API 401 Recovery 是 Sub2API 的配套恢复服务。它通过 Sub2API Admin
 - 自动执行 Chromium OAuth 流程，处理邮箱验证码和 TOTP 验证。
 - 完成 PKCE 授权码交换，把新凭据回写到原 Sub2API 账号并再次校验。
 - Dashboard 展示账号、任务、阶段、重试时间和技术错误详情。
+- 发布版 Dashboard 会检查新版本，并支持在线更新与健康检查失败回滚。
 - 提供独立邮箱池列表，保存邮箱及邮箱密码；密码加密存储，列表默认脱敏，账号删除后仍可保留邮箱记录。
 - 遇到账号被停用或删除页面时保存加密截图，便于人工复核。
 - 提供受保护的手动删除入口，只有在确认账号确实停用后才建议执行。
@@ -71,7 +72,7 @@ Sub2API 账号状态
 
 ### 使用发布版
 
-当前发布版为 `v0.4.16`：
+当前发布版为 `v0.4.17`：
 
 ```bash
 git clone https://github.com/AnnaKarelovsky/sub2api-401-recovery.git
@@ -86,6 +87,8 @@ SUB2API_BASE_URL=https://your-sub2api.example.com
 SUB2API_ADMIN_KEY=your-admin-key
 ```
 
+如果通过安装脚本部署，`UPDATE_AGENT_TOKEN` 会自动生成。手动 Compose 部署时，请执行 `openssl rand -hex 32`，将输出写入 `.env` 的 `UPDATE_AGENT_TOKEN` 后再启动 Compose。
+
 然后启动：
 
 ```bash
@@ -96,8 +99,19 @@ docker compose -f docker-compose.release.yml logs -f recovery-worker
 发布版安装脚本也会创建 `data`、`backups` 和 `evidence` 目录：
 
 ```bash
-VERSION=v0.4.16 bash install-release.sh
+RECOVERY_VERSION=v0.4.17 bash install-release.sh
 ```
+
+发布版登录后会定期检查 GitHub Releases；有新版本时，左侧版本号旁会显示提示。点击版本号可查看发行说明并开始更新。
+更新器先备份 SQLite，再拉取指定版本的 GHCR 镜像，重建 API 和 worker 并等待健康检查；检查失败时会恢复原版本。
+更新期间 Dashboard 会短暂断开，完成后自动刷新。此功能要求部署机能访问 GitHub Releases API 和 GHCR，只支持本项目官方镜像；源码部署继续使用 `update.sh`。
+
+发布版会启动一个不映射宿主端口的内部更新代理。只有更新代理挂载 Docker socket；Dashboard API 通过随机生成的
+`UPDATE_AGENT_TOKEN` 调用固定更新接口。Docker socket 权限很高，请保护 `.env` 并只在可信的单机 Docker 主机启用。
+
+已安装的旧版发布部署需要先用包含 `recovery-update-agent` 服务的新 `docker-compose.release.yml` 做一次配置升级，
+并运行新版安装脚本生成 `UPDATE_AGENT_TOKEN`。安装脚本不会覆盖已有 Compose 文件，以免丢失本地修改；确认并合并新配置后，
+后续更新即可从 Dashboard 发起。
 
 ### 从源码运行
 

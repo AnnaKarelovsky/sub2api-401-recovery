@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     app_name: str = "Sub2API 401 Recovery"
     app_host: str = "0.0.0.0"
     app_port: int = 1455
+    update_mode: str = Field(default="disabled", validation_alias="UPDATE_MODE")
+    update_agent_url: str = Field(default="", validation_alias="UPDATE_AGENT_URL")
+    update_agent_token: str = Field(default="", validation_alias="UPDATE_AGENT_TOKEN")
+    recovery_image: str = Field(default="", validation_alias="RECOVERY_IMAGE")
     log_level: str = "INFO"
     database_path: str = "./data/recovery.db"
     backup_dir: str = "./backups"

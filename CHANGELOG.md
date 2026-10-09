@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.17 - 2026-10-09
+
+### Release deployment updates
+
+- Added a release-only Dashboard update check with GitHub Release notes and version comparison.
+- Added an internal authenticated update agent that backs up SQLite, pulls the selected GHCR release, recreates API and worker services, and rolls back the version when health checks fail.
+- Added build-time application version injection so the Dashboard version matches the published image.
+- Kept source and custom-image deployments on the existing command-line update path.
+
 ## 0.4.16 - 2026-10-07
 
 ### OAuth recovery log cleanup

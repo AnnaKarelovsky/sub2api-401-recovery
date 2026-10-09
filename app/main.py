@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,7 @@ from .redaction import safe_error
 from .recovery import RecoveryCoordinator, RecoveryRuntime
 from .security import SecretBox, SessionToken
 from .sub2api import Sub2APIClient, Sub2APIError
+from .update_service import APP_VERSION, request_agent, update_info
 
 
 class LoginRequest(BaseModel):
@@ -204,7 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             runtime.close()
 
-    app = FastAPI(title=settings.app_name, version="0.4.16", lifespan=lifespan)
+    app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -220,8 +221,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return value
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(Path(__file__).parent / "static" / "index.html")
+    def index() -> HTMLResponse:
+        index_path = Path(__file__).parent / "static" / "index.html"
+        page = index_path.read_text(encoding="utf-8")
+        return HTMLResponse(page.replace("__APP_VERSION__", html.escape(f"v{APP_VERSION}")))
 
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
@@ -229,6 +232,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def healthz(request: Request) -> dict[str, Any]:
         active = getattr(request.app.state, "runtime", None)
         return {"status": "ok" if active else "starting", "service": settings.app_name}
+
+    def update_enabled() -> bool:
+        return (
+            settings.update_mode == "release"
+            and not settings.recovery_image.strip()
+            and bool(settings.update_agent_url.strip())
+            and len(settings.update_agent_token) >= 32
+        )
+
+    @app.get("/api/v1/update")
+    def check_update(
+        refresh: bool = False,
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        payload = update_info(enabled=update_enabled(), force=refresh)
+        if update_enabled():
+            try:
+                agent = request_agent(
+                    base_url=settings.update_agent_url,
+                    token=settings.update_agent_token,
+                )
+                payload["operation"] = agent
+            except Exception:
+                payload["operation"] = {"status": "unavailable", "message": "更新服务暂时不可用"}
+        return payload
+
+    @app.post("/api/v1/update", status_code=202)
+    def start_update(_: SessionToken = Depends(auth_required)) -> dict[str, Any]:
+        if not update_enabled():
+            raise HTTPException(status_code=409, detail="此部署方式不支持 Dashboard 一键更新")
+        payload = update_info(enabled=True)
+        if not payload["update_available"] or not payload["latest_version"]:
+            raise HTTPException(status_code=409, detail="当前没有可用的新版本")
+        try:
+            return request_agent(
+                base_url=settings.update_agent_url,
+                token=settings.update_agent_token,
+                method="POST",
+                path="/update",
+                payload={"version": payload["latest_version"]},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/v1/update/status")
+    def update_status(_: SessionToken = Depends(auth_required)) -> dict[str, Any]:
+        if not update_enabled():
+            return {"status": "disabled", "message": "此部署方式不支持 Dashboard 一键更新"}
+        try:
+            return request_agent(
+                base_url=settings.update_agent_url,
+                token=settings.update_agent_token,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="更新服务暂时不可用") from exc
 
     @app.post("/api/v1/auth/login")
     def auth_login(payload: LoginRequest) -> dict[str, Any]:

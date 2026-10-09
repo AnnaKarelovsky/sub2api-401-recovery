@@ -25,6 +25,7 @@ The screenshot below is a sanitized view of a real successful recovery task. It 
 - Completes PKCE authorization-code exchange and applies the new credentials to the original Sub2API account.
 - Verifies the recovered account and restores schedulability.
 - Shows each recovery stage, retry state, technical error, and account-specific history in the Dashboard.
+- Release deployments can check for updates and update from the Dashboard with a backup and health-checked rollback.
 - Provides an independent mailbox pool for reusable email credentials. Passwords are encrypted at rest, masked in the list, and retained after a Sub2API account is deleted.
 - Captures encrypted screenshots when OpenAI displays an account-deleted or account-disabled page.
 - Provides guarded manual deletion for accounts that have been independently confirmed as disabled.
@@ -106,7 +107,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.16/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.17/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -121,6 +122,12 @@ DASHBOARD_PASSWORD=use-a-strong-password
 ```
 
 Open `http://<host>:1455/` after the containers become healthy.
+
+Release deployments periodically check GitHub Releases after login. When a new version is available, the version control in the sidebar shows an update badge. Open it to review release notes and start the update. The updater creates a SQLite backup, pulls the selected GHCR release image, recreates the API and worker, and waits for health checks; it restores the previous image tag if the new services do not become healthy. The Dashboard is briefly unavailable during restart. This requires outbound access to the GitHub Releases API and GHCR and supports only the project's official image. Source and custom-image deployments continue to use the command-line update process.
+
+The release Compose setup runs a private update-agent service without a published host port. Only that service mounts the Docker socket; the Dashboard API can call only its authenticated fixed update endpoints using a generated `UPDATE_AGENT_TOKEN`. Docker socket access is highly privileged, so use this on a trusted single-host Docker deployment and protect `.env`.
+
+Existing release deployments need a one-time Compose update to add `recovery-update-agent`, followed by the updated installer to generate `UPDATE_AGENT_TOKEN`. The installer does not overwrite an existing Compose file, so merge the new service configuration with any local changes. Later updates can be started from the Dashboard.
 
 ### Source installation
 

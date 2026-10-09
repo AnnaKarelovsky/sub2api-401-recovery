@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sub2api-401-recovery"
-version = "0.4.16"
+version = "0.4.17"
 description = "Companion service for recovering OpenAI OAuth accounts managed by Sub2API"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"

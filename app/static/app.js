@@ -1,9 +1,10 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], mailboxes: [], mailboxSecrets: new Map(), editingMailboxId: "", reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], mailboxes: [], mailboxSecrets: new Map(), editingMailboxId: "", reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, update: null, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
+const UPDATE_CHECK_MS = 30 * 60 * 1000;
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "skipped"]);
 const DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed OAuth 401; starting OAuth reauthorization";
 const LEGACY_DIRECT_OAUTH_401_MESSAGE = "Sub2API confirmed 401; skipping native and refresh-token attempts and starting a new OAuth flow";
@@ -24,6 +25,8 @@ let taskDialogRefreshTimer = null;
 let selectedTaskRefreshTimer = null;
 let selectedTaskRequest = 0;
 let activeTaskId = "";
+let updateCheckTimer = null;
+let updateStatusTimer = null;
 
 function renderThemeControl(theme) {
   const dark = theme === "dark";
@@ -69,9 +72,16 @@ function setLoggedIn(value) {
   $("#app-view").classList.toggle("hidden", !value);
   if (value) {
     startDashboardRefresh();
+    checkForUpdate().catch(() => {});
+    if (!updateCheckTimer) updateCheckTimer = window.setInterval(() => {
+      if (!document.hidden && state.token) checkForUpdate().catch(() => {});
+    }, UPDATE_CHECK_MS);
     if (state.accountEnrollmentId) startAccountEnrollmentPolling();
   } else {
     stopDashboardRefresh();
+    if (updateCheckTimer) window.clearInterval(updateCheckTimer);
+    updateCheckTimer = null;
+    stopUpdateStatusPolling();
     stopAccountEnrollmentPolling();
   }
 }
@@ -83,6 +93,73 @@ function logout() {
   stopSelectedTaskRefresh();
   stopAccountEnrollmentPolling();
   setLoggedIn(false);
+}
+
+function renderUpdateInfo(info) {
+  state.update = info;
+  const version = info?.current_version || "-";
+  $("#current-version").textContent = version;
+  $("#update-current-version").textContent = version;
+  $("#update-latest-version").textContent = info?.latest_version || (info?.check_error ? "暂不可用" : "已是最新");
+  $("#update-badge").classList.toggle("hidden", !info?.update_available || info?.operation?.status === "succeeded");
+  $("#update-description").textContent = info?.update_available
+    ? "新版本已发布。点击更新后服务会短暂重启，账号数据和配置会保留。"
+    : (info?.check_error || (info?.update_enabled ? "当前已是最新版本。" : "当前部署方式请使用命令行脚本更新。"));
+  $("#update-release-notes").textContent = info?.release_notes || "";
+  $("#update-release-notes").classList.toggle("hidden", !info?.release_notes);
+  const releaseLink = $("#release-link");
+  releaseLink.href = info?.release_url || "#";
+  releaseLink.classList.toggle("hidden", !info?.release_url);
+  const operation = info?.operation;
+  if (operation?.status === "running") {
+    $("#update-description").textContent = operation.message || "正在更新，服务即将重启...";
+    startUpdateStatusPolling();
+  } else if (operation?.status === "failed") {
+    $("#update-description").textContent = operation.message || "更新失败，原版本仍在运行。";
+    stopUpdateStatusPolling();
+  } else if (operation?.status === "succeeded") {
+    $("#update-description").textContent = operation.message || `已更新到 ${operation.current_version}`;
+    $("#current-version").textContent = operation.current_version || info.current_version;
+    $("#update-current-version").textContent = operation.current_version || info.current_version;
+  }
+  $("#start-update").disabled = !info?.update_available || !info?.update_enabled || ["running", "succeeded"].includes(operation?.status);
+}
+
+async function checkForUpdate(force = false) {
+  if (!state.token) return;
+  const info = await api(`/api/v1/update${force ? "?refresh=true" : ""}`);
+  renderUpdateInfo(info);
+}
+
+function openUpdateDialog() {
+  $("#update-dialog").showModal();
+  if (!state.update) checkForUpdate(true).catch((error) => {
+    $("#update-description").textContent = error.message;
+  });
+}
+
+function startUpdateStatusPolling() {
+  if (updateStatusTimer) return;
+  updateStatusTimer = window.setInterval(async () => {
+    if (!state.token) return stopUpdateStatusPolling();
+    try {
+      const operation = await api("/api/v1/update/status");
+      renderUpdateInfo({ ...state.update, operation });
+      if (operation.status === "succeeded") {
+        stopUpdateStatusPolling();
+        window.setTimeout(() => window.location.reload(), 2500);
+      } else if (operation.status === "failed") {
+        stopUpdateStatusPolling();
+      }
+    } catch (_) {
+      $("#update-description").textContent = "服务正在重启，等待更新结果...";
+    }
+  }, 2500);
+}
+
+function stopUpdateStatusPolling() {
+  if (updateStatusTimer) window.clearInterval(updateStatusTimer);
+  updateStatusTimer = null;
 }
 
 function startDashboardRefresh() {
@@ -1499,4 +1576,26 @@ document.addEventListener("visibilitychange", () => {
 });
 
 renderThemeControl(savedTheme);
+$("#version-button").addEventListener("click", openUpdateDialog);
+$("#check-update").addEventListener("click", async () => {
+  const button = $("#check-update");
+  button.disabled = true;
+  button.textContent = "检查中...";
+  try { await checkForUpdate(true); }
+  catch (error) { $("#update-description").textContent = error.message; }
+  finally { button.disabled = false; button.textContent = "检查更新"; }
+});
+$("#start-update").addEventListener("click", async () => {
+  const button = $("#start-update");
+  button.disabled = true;
+  $("#update-description").textContent = "正在备份数据并下载新版本...";
+  try {
+    const operation = await api("/api/v1/update", { method: "POST" });
+    renderUpdateInfo({ ...state.update, operation });
+    startUpdateStatusPolling();
+  } catch (error) {
+    $("#update-description").textContent = error.message;
+    button.disabled = !state.update?.update_available;
+  }
+});
 if (state.token) { setLoggedIn(true); showView(state.activeView); loadAll().catch(() => logout()); } else { setLoggedIn(false); showView("console"); }

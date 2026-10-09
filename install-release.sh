@@ -5,7 +5,16 @@ project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_dir"
 
 repository="AnnaKarelovsky/sub2api-401-recovery"
-release_version="${RECOVERY_VERSION:-v0.4.16}"
+requested_release_version="${RECOVERY_VERSION:-}"
+configured_release_version=""
+if [ -f .env ]; then
+  configured_release_version="$(sed -n 's/^RECOVERY_VERSION=//p' .env | tail -n 1 | tr -d '\"' | tr -d "'")"
+fi
+release_version="${requested_release_version:-${configured_release_version:-v0.4.17}}"
+if [[ ! "$release_version" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Invalid release version: ${release_version}" >&2
+  exit 1
+fi
 image="${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${release_version}}"
 raw_base="https://raw.githubusercontent.com/${repository}/${release_version}"
 
@@ -54,14 +63,36 @@ set_generated_value() {
   fi
 }
 
+set_value() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" .env; then
+    sed -i "s|^${key}=.*$|${key}=${value}|" .env
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
 set_generated_value ENCRYPTION_KEY "$(generate_secret)"
 set_generated_value DASHBOARD_SECRET "$(generate_secret)"
+set_generated_value UPDATE_AGENT_TOKEN "$(generate_secret)"
+if [ -n "$requested_release_version" ] || [ -z "$configured_release_version" ]; then
+  set_value RECOVERY_VERSION "$release_version"
+fi
+if [ -n "${RECOVERY_IMAGE:-}" ]; then
+  set_value RECOVERY_IMAGE "$image"
+  set_value UPDATE_MODE disabled
+elif grep -q '^RECOVERY_IMAGE=.' .env; then
+  set_value UPDATE_MODE disabled
+fi
 
 chmod 700 data backups evidence
 chmod 600 .env
 
 compose=(docker compose -f docker-compose.release.yml)
-export RECOVERY_IMAGE="$image"
+if [ -n "${RECOVERY_IMAGE:-}" ]; then
+  export RECOVERY_IMAGE="$image"
+fi
 "${compose[@]}" pull
 
 env_value() {

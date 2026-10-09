@@ -10,7 +10,7 @@
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.16/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.17/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -22,10 +22,19 @@ chmod +x install-release.sh
 升级到新版本时，设置目标版本并重新执行脚本：
 
 ```bash
-RECOVERY_VERSION=v0.4.16 ./install-release.sh
+RECOVERY_VERSION=v0.4.17 ./install-release.sh
 ```
 
 脚本会保留已有 `.env`、`data/` 和 `backups/`。
+
+发布版支持在 Dashboard 一键升级。登录后会检查 GitHub Releases；点击左侧版本号可查看新版本和发行说明，然后启动更新。
+更新器先备份 SQLite，再拉取版本化 GHCR 镜像、重建 API/worker 并等待健康检查；失败时会恢复原版本。该流程要求出站访问
+GitHub API 和 GHCR。更新代理只监听 Compose 内部网络，但需要挂载 Docker socket；这是高权限组件，需保护 `.env`，不要把
+管理面板开放给不可信用户。
+
+自定义镜像和源码部署不会提供 Dashboard 一键更新入口：自定义镜像需自行维护更新方式，源码部署继续使用仓库内的 `./update.sh`。
+
+升级前已存在的 Release 部署需要一次性合并新版 `docker-compose.release.yml` 中的 `recovery-update-agent` 服务，并再次运行新版安装脚本生成 `UPDATE_AGENT_TOKEN`。安装脚本不会覆盖已有 Compose 文件，避免抹掉本地配置。
 
 ### 从源码构建
 

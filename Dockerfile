@@ -1,11 +1,19 @@
 ARG BASE_IMAGE=python:3.12-slim
+FROM docker:27-cli AS docker_cli
+
 FROM ${BASE_IMAGE}
+
+ARG APP_VERSION=0.4.17
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
+
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 COPY constraints.txt ./
 

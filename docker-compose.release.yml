@@ -1,6 +1,6 @@
 services:
   recovery-api:
-    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:v0.4.16}
+    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.17}}
     env_file:
       - .env
     environment:
@@ -8,6 +8,10 @@ services:
       BACKUP_DIR: /backups
       EVIDENCE_DIR: /evidence
       EVIDENCE_MOUNT_REQUIRED: "true"
+      UPDATE_MODE: ${UPDATE_MODE:-release}
+      UPDATE_AGENT_URL: http://recovery-update-agent:1456
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:?Set UPDATE_AGENT_TOKEN in .env}
+      RECOVERY_IMAGE: ${RECOVERY_IMAGE:-}
     ports:
       - "${APP_PORT:-1455}:1455"
     extra_hosts:
@@ -25,7 +29,7 @@ services:
       start_period: 20s
 
   recovery-worker:
-    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:v0.4.16}
+    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.17}}
     env_file:
       - .env
     environment:
@@ -43,4 +47,22 @@ services:
     depends_on:
       recovery-api:
         condition: service_healthy
+    restart: unless-stopped
+
+  recovery-update-agent:
+    image: ${UPDATE_AGENT_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.17}}
+    command: ["python", "-m", "app.update_agent"]
+    environment:
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:?Set UPDATE_AGENT_TOKEN in .env}
+      UPDATE_PROJECT_DIR: ${PWD:-/workspace}
+      UPDATE_CURRENT_VERSION: ${RECOVERY_VERSION:-v0.4.17}
+      UPDATE_COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
+    volumes:
+      - .:${PWD:-/workspace}
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
