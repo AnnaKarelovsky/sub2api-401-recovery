@@ -1,6 +1,6 @@
 services:
   recovery-api:
-    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.18}}
+    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.19}}
     env_file:
       - .env
     environment:
@@ -29,7 +29,7 @@ services:
       start_period: 20s
 
   recovery-worker:
-    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.18}}
+    image: ${RECOVERY_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.19}}
     env_file:
       - .env
     environment:
@@ -50,12 +50,12 @@ services:
     restart: unless-stopped
 
   recovery-update-agent:
-    image: ${UPDATE_AGENT_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.18}}
+    image: ${UPDATE_AGENT_IMAGE:-ghcr.io/annakarelovsky/sub2api-401-recovery:${RECOVERY_VERSION:-v0.4.19}}
     command: ["python", "-m", "app.update_agent"]
     environment:
       UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:?Set UPDATE_AGENT_TOKEN in .env}
       UPDATE_PROJECT_DIR: ${PWD:-/workspace}
-      UPDATE_CURRENT_VERSION: ${RECOVERY_VERSION:-v0.4.18}
+      UPDATE_CURRENT_VERSION: ${RECOVERY_VERSION:-v0.4.19}
       UPDATE_COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
     volumes:
       - .:${PWD:-/workspace}

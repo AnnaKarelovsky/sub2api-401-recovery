@@ -78,7 +78,7 @@ The console keeps screenshot evidence inside the account log. Sensitive tokens, 
 
 ![Recovery logs](docs/screenshots/recovery-logs.png)
 
-The mailbox pool migrates saved email materials during startup. The list endpoint never returns plaintext passwords; an authenticated reveal or copy action reads a single credential on demand and marks the access time. Deleting a Sub2API account does not delete its independent mailbox record.
+The mailbox pool migrates saved email materials during startup. The list endpoint never returns plaintext passwords; an authenticated reveal or copy action reads a single credential on demand and marks the access time. A rejected mailbox login is recorded as `login_failed` and shown as `无法登录`; connection timeouts are not treated as permanent credential failures. Deleting a Sub2API account does not delete its independent mailbox record.
 
 ## Requirements
 
@@ -107,7 +107,7 @@ The release installation only needs Docker Engine, Docker Compose v2, `curl`, an
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.18/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.19/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -246,6 +246,8 @@ When the browser reaches an OpenAI account-deleted or account-disabled page, the
 - encrypts and stores the page screenshot under `EVIDENCE_HOST_DIR`;
 - keeps the task and log history for audit;
 - exposes the screenshot only through an authenticated task-scoped endpoint.
+
+If the linked mailbox password is available, the worker then signs in through IMAP and checks recent mail for an OpenAI account-deactivation message. A detected message is rendered as a separate encrypted mailbox-evidence screenshot and attached to the same task log. Rejected mailbox credentials update the independent mailbox-pool status to `login_failed` without changing the account classification; other mailbox access failures do not change the account classification. Mailbox evidence alone never satisfies the disabled-page screenshot requirement for manual Sub2API deletion.
 
 The service never deletes a Sub2API account automatically. The Accounts view only enables bulk deletion after the disabled state, task stage, screenshot evidence, and remote account identity have all been rechecked. Deletion keeps local logs and evidence but clears local encrypted materials.
 

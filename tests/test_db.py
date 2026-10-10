@@ -52,6 +52,43 @@ def test_mailbox_pool_survives_account_deletion_and_keeps_password_encrypted(dat
     }
 
 
+def test_mailbox_login_failure_status_survives_same_password_sync(database):
+    mailbox_id = database.upsert_mailbox("mailbox@example.com", "mail-secret")
+
+    assert database.mark_mailbox_status(
+        "mailbox@example.com",
+        "login_failed",
+        error="mailbox credentials were rejected",
+    )
+    assert database.list_mailboxes()[0]["status"] == "login_failed"
+
+    database.upsert_mailbox("mailbox@example.com", "mail-secret")
+    assert database.get_mailbox(mailbox_id)["status"] == "login_failed"
+
+    database.upsert_mailbox("mailbox@example.com", "new-mail-secret")
+    updated = database.get_mailbox(mailbox_id)
+    assert updated["status"] == "unknown"
+    assert updated["last_error"] is None
+
+
+def test_mailbox_evidence_does_not_count_as_disabled_page_evidence(database):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 89, "email": "mailbox@example.com", "status": "account_disabled"}
+    )
+    task_id, _ = database.create_task(89, trigger="test")
+    evidence_id = database.save_task_evidence(task_id, b"\x89PNG\r\n\x1a\nmailbox-evidence")
+    database.append_log(
+        task_id,
+        level="WARNING",
+        stage="mailbox_verification",
+        message="mailbox evidence found",
+        detail={"evidence_id": evidence_id, "screenshot_kind": "mailbox_message"},
+    )
+
+    assert database.task_has_evidence(task_id)
+    assert not database.task_has_disabled_page_evidence(task_id)
+
+
 def test_stale_running_tasks_are_requeued_after_restart(database):
     database.upsert_account_snapshot({"sub2api_account_id": 12, "status": "auth_failed"})
     task_id, _ = database.create_task(12, trigger="scan")

@@ -10,7 +10,7 @@
 ```bash
 mkdir -p sub2api-401-recovery
 cd sub2api-401-recovery
-curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.18/install-release.sh -o install-release.sh
+curl -fsSL https://raw.githubusercontent.com/AnnaKarelovsky/sub2api-401-recovery/v0.4.19/install-release.sh -o install-release.sh
 chmod +x install-release.sh
 ./install-release.sh
 ```
@@ -22,7 +22,7 @@ chmod +x install-release.sh
 升级到新版本时，设置目标版本并重新执行脚本：
 
 ```bash
-RECOVERY_VERSION=v0.4.18 ./install-release.sh
+RECOVERY_VERSION=v0.4.19 ./install-release.sh
 ```
 
 脚本会保留已有 `.env`、`data/` 和 `backups/`。
@@ -96,6 +96,8 @@ MAIL_CODE_TIMEOUT_SECONDS=150
 MAIL_POLL_SECONDS=5
 OUTLOOK_WEBMAIL_ENABLED=true
 ```
+
+账号停用页面被确认后，若关联邮箱密码可用，worker 会通过 IMAP 检查最近 `MAIL_ACCOUNT_DISABLED_LOOKBACK_DAYS` 天的 OpenAI 停用邮件，并把脱敏摘要保存为加密证据截图。邮箱凭据被明确拒绝时，邮箱池会记录为“无法登录”；连接超时等临时错误不会被标记为凭据失效。邮箱核验失败不会改变账号状态；邮件证据仅用于辅助复核，不会替代停用页面截图。
 
 缺少登录邮箱或 OpenAI 密码时，账号进入 `automation_blocked`，不会创建可执行的自动登录任务。邮箱密码和 TOTP
 属于按页面需要读取的可选材料：没有邮箱验证码时不要求邮箱密码，没有 2FA 页面时不要求 TOTP；如果页面实际

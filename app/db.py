@@ -89,6 +89,9 @@ class Database:
                         email TEXT NOT NULL UNIQUE,
                         password_encrypted TEXT,
                         source_account_id INTEGER,
+                        status TEXT NOT NULL DEFAULT 'unknown',
+                        last_error TEXT,
+                        last_checked_at TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         last_accessed_at TEXT
@@ -266,6 +269,15 @@ class Database:
 
     def _migrate_mailbox_pool(self, conn: sqlite3.Connection) -> None:
         """Copy existing email materials before account deletion can remove them."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(mailbox_pool)")}
+        if "status" not in columns:
+            conn.execute(
+                "ALTER TABLE mailbox_pool ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        if "last_error" not in columns:
+            conn.execute("ALTER TABLE mailbox_pool ADD COLUMN last_error TEXT")
+        if "last_checked_at" not in columns:
+            conn.execute("ALTER TABLE mailbox_pool ADD COLUMN last_checked_at TEXT")
         rows = conn.execute(
             """
             SELECT sub2api_account_id, email, email_password_encrypted
@@ -560,6 +572,26 @@ class Database:
         file_name = str(row["file_name"])
         return Path(file_name).name == file_name and (self.evidence_dir / file_name).is_file()
 
+    def task_has_disabled_page_evidence(self, task_id: str) -> bool:
+        """Return true only for the screenshot captured from OpenAI's disabled page."""
+        for log in self.list_logs(task_id):
+            if log.get("stage") != "account_disabled":
+                continue
+            detail = log.get("detail") or {}
+            evidence_id = detail.get("evidence_id")
+            if not evidence_id:
+                continue
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT file_name FROM task_evidence WHERE id=? AND task_id=?",
+                    (str(evidence_id), task_id),
+                ).fetchone()
+            if row:
+                file_name = str(row["file_name"])
+                if Path(file_name).name == file_name and (self.evidence_dir / file_name).is_file():
+                    return True
+        return False
+
     def finalize_account_deletion(
         self,
         account_id: int,
@@ -686,33 +718,70 @@ class Database:
                 (normalized_email,),
             ).fetchone()
             if existing:
+                existing_password = (
+                    self.secret_box.decrypt(existing["password_encrypted"])
+                    if existing["password_encrypted"]
+                    else None
+                )
+                password_changed = bool(encrypted_password) and existing_password != password.strip()
                 conn.execute(
                     """
                     UPDATE mailbox_pool SET
                         password_encrypted=COALESCE(?, password_encrypted),
-                        source_account_id=COALESCE(?, source_account_id), updated_at=?
+                        source_account_id=COALESCE(?, source_account_id),
+                        status=CASE WHEN ? THEN 'unknown' ELSE status END,
+                        last_error=CASE WHEN ? THEN NULL ELSE last_error END,
+                        last_checked_at=CASE WHEN ? THEN NULL ELSE last_checked_at END,
+                        updated_at=?
                     WHERE id=?
                     """,
-                    (encrypted_password, source_account_id, now, str(existing["id"])),
+                    (
+                        encrypted_password,
+                        source_account_id,
+                        password_changed,
+                        password_changed,
+                        password_changed,
+                        now,
+                        str(existing["id"]),
+                    ),
                 )
                 return str(existing["id"])
             mailbox_id = str(uuid.uuid4())
             conn.execute(
                 """
                 INSERT INTO mailbox_pool(
-                    id, email, password_encrypted, source_account_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, email, password_encrypted, source_account_id, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'unknown', ?, ?)
                 """,
                 (mailbox_id, normalized_email, encrypted_password, source_account_id, now, now),
             )
             return mailbox_id
+
+    def mark_mailbox_status(self, email: str, status: str, *, error: str | None = None) -> bool:
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email:
+            return False
+        now = utc_now()
+        safe_reason = redact_text(str(error))[:500] if error else None
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE mailbox_pool SET
+                    status=?, last_error=?, last_checked_at=?, updated_at=?
+                WHERE email=?
+                """,
+                (str(status), safe_reason, now, now, normalized_email),
+            )
+        return cursor.rowcount == 1
 
     def list_mailboxes(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT p.id, p.email, p.source_account_id, p.created_at, p.updated_at,
-                    p.last_accessed_at, (p.password_encrypted IS NOT NULL) AS has_password,
+                    p.last_accessed_at, p.status, p.last_error, p.last_checked_at,
+                    (p.password_encrypted IS NOT NULL) AS has_password,
                     m.status AS source_account_status, m.remote_present AS source_account_present
                 FROM mailbox_pool p
                 LEFT JOIN account_mapping m ON m.sub2api_account_id=p.source_account_id
@@ -741,6 +810,28 @@ class Database:
                 "UPDATE mailbox_pool SET last_accessed_at=? WHERE id=?",
                 (now, mailbox_id),
             )
+        return {
+            "email": str(row["email"]),
+            "password": self.secret_box.decrypt(row["password_encrypted"]) or "",
+        }
+
+    def get_mailbox_secret_by_email(self, email: str) -> dict[str, str] | None:
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email:
+            return None
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, email, password_encrypted FROM mailbox_pool WHERE email=?",
+                (normalized_email,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE mailbox_pool SET last_accessed_at=? WHERE id=?",
+                    (now, str(row["id"])),
+                )
+        if not row:
+            return None
         return {
             "email": str(row["email"]),
             "password": self.secret_box.decrypt(row["password_encrypted"]) or "",
@@ -990,7 +1081,12 @@ class Database:
                 """,
                 (limit, offset),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["has_disabled_page_evidence"] = self.task_has_disabled_page_evidence(str(item["id"]))
+            result.append(item)
+        return result
 
     def set_task_stage(self, task_id: str, stage: str, *, status: str | None = None) -> None:
         values: list[Any] = [stage, utc_now()]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import imaplib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.mailbox import ImapCodeReader, OutlookWebCodeReader
+import pytest
+
+from app.mailbox import ImapAccountDisabledReader, ImapCodeReader, MailboxError, OutlookWebCodeReader
 from app.note_credentials import NoteCredentials, parse_account_notes
 from app.totp import normalize_totp_secret, totp_code
 from app.automatic_browser import AutomaticBrowserError, AutomaticOAuthRunner
@@ -514,3 +517,42 @@ def test_imap_reader_extracts_recent_openai_code(settings):
         "mail-pass",
         since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
     ) == "123456"
+
+
+def test_imap_reader_finds_recent_openai_disabled_mail(settings):
+    message = (
+        b"Date: Wed, 16 Sep 2026 06:00:00 +0000\r\n"
+        b"Subject: Your OpenAI account has been deactivated\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"Your account has been deactivated because of a violation of our policies."
+    )
+    reader = ImapAccountDisabledReader(settings, connection_factory=lambda *args, **kwargs: FakeImap(message))
+
+    evidence = reader.find_account_disabled_message(
+        "owner@outlook.com",
+        "mail-pass",
+        since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
+    )
+
+    assert evidence is not None
+    assert evidence.provider == "outlook.office365.com"
+    assert "deactivated" in evidence.subject.lower()
+    assert "violation" in evidence.excerpt.lower()
+
+
+def test_imap_reader_classifies_rejected_credentials(settings):
+    class RejectingImap(FakeImap):
+        def login(self, username: str, password: str):
+            raise imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+
+    reader = ImapAccountDisabledReader(settings, connection_factory=lambda *args, **kwargs: RejectingImap(b""))
+
+    with pytest.raises(MailboxError) as raised:
+        reader.find_account_disabled_message(
+            "owner@outlook.com",
+            "wrong-password",
+            since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
+        )
+
+    assert raised.value.code == "credentials_rejected"
+    assert not raised.value.retryable

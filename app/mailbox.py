@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import email
 import email.policy
+import html
 import imaplib
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.message import Message
@@ -16,10 +18,181 @@ from .redaction import safe_error
 
 
 class MailboxError(RuntimeError):
-    def __init__(self, reason: str, *, retryable: bool = True):
+    def __init__(self, reason: str, *, retryable: bool = True, code: str = ""):
         super().__init__(reason)
         self.reason = safe_error(reason)
         self.retryable = retryable
+        self.code = code
+
+
+@dataclass(frozen=True)
+class MailboxEvidence:
+    provider: str
+    subject: str
+    received_at: datetime | None
+    excerpt: str
+
+
+class ImapAccountDisabledReader:
+    """Find recent OpenAI account-status mail without exposing mailbox contents to logs."""
+
+    def __init__(self, settings: Settings, *, connection_factory: Callable[..., Any] | None = None):
+        self.settings = settings
+        self.connection_factory = connection_factory or imaplib.IMAP4_SSL
+
+    def find_account_disabled_message(
+        self,
+        email_address: str,
+        password: str,
+        *,
+        since: datetime,
+    ) -> MailboxEvidence | None:
+        domain = str(email_address.rsplit("@", 1)[-1]).strip().lower()
+        if domain in {"example.com", "example.test", "invalid"}:
+            raise MailboxError("mailbox provider is not configured for this address", retryable=False)
+        host = self._host_for_email(email_address)
+        try:
+            connection = self.connection_factory(
+                host,
+                self.settings.mail_imap_port,
+                timeout=min(30, max(5, self.settings.mail_code_timeout_seconds)),
+            )
+        except (imaplib.IMAP4.error, OSError, TimeoutError) as exc:
+            raise MailboxError(f"IMAP mailbox access failed: {safe_error(exc)}") from exc
+        try:
+            try:
+                connection.login(email_address, password)
+            except (imaplib.IMAP4.error,) as exc:
+                raise MailboxError(
+                    "IMAP mailbox credentials were rejected",
+                    retryable=False,
+                    code="credentials_rejected",
+                ) from exc
+            except (OSError, TimeoutError) as exc:
+                raise MailboxError(
+                    f"IMAP mailbox login failed: {safe_error(exc)}",
+                    code="connection_failed",
+                ) from exc
+            except Exception as exc:
+                raise MailboxError(
+                    "IMAP mailbox login failed",
+                    retryable=False,
+                    code="login_failed",
+                ) from exc
+            status, _ = connection.select(self.settings.mail_imap_folder, readonly=True)
+            if status != "OK":
+                raise MailboxError("IMAP mailbox folder could not be opened")
+            date_value = since.astimezone(timezone.utc).strftime("%d-%b-%Y")
+            status, data = connection.search(None, "SINCE", date_value)
+            if status != "OK" or not data or not data[0]:
+                return None
+            message_ids = data[0].split()[-50:]
+            for message_id in reversed(message_ids):
+                status, fetched = connection.fetch(message_id, "(RFC822)")
+                if status != "OK":
+                    continue
+                for item in fetched or []:
+                    if not isinstance(item, tuple) or len(item) < 2:
+                        continue
+                    message = email.message_from_bytes(item[1], policy=email.policy.default)
+                    received_at = _message_date(message)
+                    if received_at and received_at < since:
+                        continue
+                    subject = _decode_header(str(message.get("Subject") or "")).strip()
+                    body = _message_text(message)
+                    if not _looks_like_account_disabled_mail(subject, body):
+                        continue
+                    return MailboxEvidence(
+                        provider=host,
+                        subject=_safe_mail_text(subject, limit=240),
+                        received_at=received_at,
+                        excerpt=_safe_mail_text(body, limit=720),
+                    )
+            return None
+        finally:
+            try:
+                connection.logout()
+            except Exception:
+                pass
+
+    def _host_for_email(self, email_address: str) -> str:
+        domain = str(email_address.rsplit("@", 1)[-1]).strip().lower()
+        defaults = {
+            "gmail.com": "imap.gmail.com",
+            "googlemail.com": "imap.gmail.com",
+            "icloud.com": "imap.mail.me.com",
+            "me.com": "imap.mail.me.com",
+            "mac.com": "imap.mail.me.com",
+            "outlook.com": "outlook.office365.com",
+            "hotmail.com": "outlook.office365.com",
+            "live.com": "outlook.office365.com",
+            "msn.com": "outlook.office365.com",
+            "yahoo.com": "imap.mail.yahoo.com",
+        }
+        return defaults.get(domain, self.settings.mail_imap_host)
+
+
+def render_mailbox_evidence_screenshot(
+    evidence: MailboxEvidence,
+    settings: Settings,
+) -> bytes:
+    """Render a minimal, local evidence card instead of saving the full raw email."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise MailboxError("Playwright is not installed; mailbox evidence screenshot is unavailable", retryable=False) from exc
+    received = evidence.received_at.isoformat(timespec="seconds") if evidence.received_at else "未知时间"
+    document = f"""
+    <!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body {{ background: #f2f5f6; color: #17202a; font: 16px/1.55 Arial, sans-serif; margin: 0; padding: 36px; }}
+          main {{ background: #fff; border: 1px solid #d9e1e5; border-radius: 8px; margin: 0 auto; max-width: 920px; padding: 28px 32px; }}
+          .eyebrow {{ color: #0d7d79; font-size: 12px; font-weight: 700; letter-spacing: .12em; }}
+          h1 {{ font-size: 25px; margin: 8px 0 20px; }}
+          dl {{ border-top: 1px solid #d9e1e5; display: grid; gap: 12px 24px; grid-template-columns: 130px 1fr; margin: 0; padding-top: 18px; }}
+          dt {{ color: #667581; }} dd {{ margin: 0; overflow-wrap: anywhere; }}
+          .excerpt {{ background: #f7f9fa; border-left: 3px solid #b73838; margin-top: 24px; padding: 14px 16px; white-space: pre-wrap; }}
+          .notice {{ color: #b73838; font-weight: 700; margin-top: 22px; }}
+        </style>
+      </head>
+      <body>
+        <main>
+          <div class="eyebrow">MAILBOX VERIFICATION EVIDENCE</div>
+          <h1>检测到疑似 OpenAI 账号停用邮件</h1>
+          <dl>
+            <dt>邮箱服务</dt><dd>{html.escape(evidence.provider)}</dd>
+            <dt>邮件主题</dt><dd>{html.escape(evidence.subject)}</dd>
+            <dt>接收时间</dt><dd>{html.escape(received)}</dd>
+          </dl>
+          <div class="notice">该截图由邮箱核验结果生成，未保存邮箱密码。</div>
+          <div class="excerpt">{html.escape(evidence.excerpt)}</div>
+        </main>
+      </body>
+    </html>
+    """
+    try:
+        with sync_playwright() as playwright:
+            proxy = settings.playwright_proxy.strip()
+            launch_options: dict[str, Any] = {"headless": True}
+            if proxy:
+                launch_options["proxy"] = {"server": proxy}
+            browser = playwright.chromium.launch(**launch_options)
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 760})
+                page.set_content(document, wait_until="domcontentloaded")
+                return page.screenshot(type="png", full_page=True, animations="disabled")
+            finally:
+                browser.close()
+    except MailboxError:
+        raise
+    except Exception as exc:
+        raise MailboxError(
+            f"Mailbox evidence screenshot failed: {safe_error(exc)}",
+            retryable=False,
+        ) from exc
 
 
 class ImapCodeReader:
@@ -52,15 +225,30 @@ class ImapCodeReader:
 
     def _read_latest(self, email_address: str, password: str, *, since: datetime) -> str:
         connection = self.connection_factory(
-            self.settings.mail_imap_host,
+            self._host_for_email(email_address),
             self.settings.mail_imap_port,
             timeout=min(30, max(5, self.settings.mail_code_timeout_seconds)),
         )
         try:
             try:
                 connection.login(email_address, password)
+            except (imaplib.IMAP4.error,) as exc:
+                raise MailboxError(
+                    "IMAP mailbox credentials were rejected",
+                    retryable=False,
+                    code="credentials_rejected",
+                ) from exc
+            except (OSError, TimeoutError) as exc:
+                raise MailboxError(
+                    f"IMAP mailbox login failed: {safe_error(exc)}",
+                    code="connection_failed",
+                ) from exc
             except Exception as exc:
-                raise MailboxError("IMAP mailbox credentials were rejected", retryable=False) from exc
+                raise MailboxError(
+                    "IMAP mailbox login failed",
+                    retryable=False,
+                    code="login_failed",
+                ) from exc
             status, _ = connection.select(self.settings.mail_imap_folder, readonly=True)
             if status != "OK":
                 raise MailboxError("IMAP mailbox folder could not be opened")
@@ -93,6 +281,22 @@ class ImapCodeReader:
                 connection.logout()
             except Exception:
                 pass
+
+    def _host_for_email(self, email_address: str) -> str:
+        domain = str(email_address.rsplit("@", 1)[-1]).strip().lower()
+        defaults = {
+            "gmail.com": "imap.gmail.com",
+            "googlemail.com": "imap.gmail.com",
+            "icloud.com": "imap.mail.me.com",
+            "me.com": "imap.mail.me.com",
+            "mac.com": "imap.mail.me.com",
+            "outlook.com": "outlook.office365.com",
+            "hotmail.com": "outlook.office365.com",
+            "live.com": "outlook.office365.com",
+            "msn.com": "outlook.office365.com",
+            "yahoo.com": "imap.mail.yahoo.com",
+        }
+        return defaults.get(domain, self.settings.mail_imap_host)
 
 
 class OutlookWebCodeReader:
@@ -156,7 +360,11 @@ class OutlookWebCodeReader:
                     if match:
                         return match.group(1)
                 if any(marker in body.lower() for marker in ("incorrect password", "account doesn’t exist", "account doesn't exist")):
-                    raise MailboxError("Outlook mailbox credentials were rejected", retryable=False)
+                    raise MailboxError(
+                        "Outlook mailbox credentials were rejected",
+                        retryable=False,
+                        code="credentials_rejected",
+                    )
                 if not email_done:
                     locator = _first_visible(page, ("input[type='email']", "input[autocomplete='username']"))
                     if locator is not None:
@@ -200,6 +408,36 @@ class OutlookWebCodeReader:
 def _looks_like_openai(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in ("openai", "chatgpt", "codex", "verification code", "one-time code"))
+
+
+def _looks_like_account_disabled_mail(subject: str, body: str) -> bool:
+    text = f"{subject}\n{body}".lower()
+    if not any(marker in text for marker in ("openai", "chatgpt", "codex")):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "account deactivated",
+            "account has been deactivated",
+            "account has been deleted",
+            "account deleted",
+            "account disabled",
+            "account is disabled",
+            "account suspended",
+            "account has been suspended",
+            "账号已被删除或停用",
+            "账户已被删除或停用",
+            "账号已停用",
+            "账户已停用",
+        )
+    )
+
+
+def _safe_mail_text(value: str, *, limit: int) -> str:
+    text = re.sub(r"<[^>]+>", " ", html.unescape(str(value or "")))
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(?i)\b(?:https?://|www\.)\S+", "[链接]", text)
+    return text[:limit] + ("…" if len(text) > limit else "")
 
 
 def _first_visible(page: Any, selectors: tuple[str, ...]) -> Any | None:

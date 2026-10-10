@@ -21,4 +21,4 @@ try:
 except PackageNotFoundError:
     _installed_version = None
 
-APP_VERSION = (os.environ.get("APP_VERSION") or _project_version() or _installed_version or "0.4.18").removeprefix("v")
+APP_VERSION = (os.environ.get("APP_VERSION") or _project_version() or _installed_version or "0.4.19").removeprefix("v")

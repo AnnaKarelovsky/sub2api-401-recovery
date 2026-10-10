@@ -4,6 +4,8 @@ from app.classifier import Classification, FailureClass
 from app.oauth import TokenSet
 from app.oauth import OAuthError
 from app.automatic_browser import AutomaticBrowserError
+from app.mailbox import MailboxError, MailboxEvidence
+from app.note_credentials import NoteCredentials
 from app.recovery import RecoveryCoordinator, RecoveryRuntime
 from app.sub2api import AccountTestResult, Sub2APIError
 
@@ -599,6 +601,92 @@ def test_account_disabled_browser_result_sets_explicit_terminal_status(database,
     evidence = database.get_task_evidence(task_id, evidence_log["detail"]["evidence_id"])
     assert evidence["content_type"] == "image/png"
     assert evidence["image"] == b"\x89PNG\r\n\x1a\naccount-disabled-page"
+
+
+def test_account_disabled_detection_verifies_mailbox_and_saves_mail_evidence(database, settings, monkeypatch):
+    settings.playwright_enabled = True
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 14, "email": "disabled@outlook.com", "status": "auth_failed"}
+    )
+    database.save_credentials(
+        14,
+        {
+            "email": "disabled@outlook.com",
+            "email_password": "mail-secret",
+            "openai_password": "gpt-secret",
+        },
+    )
+    task_id, _ = database.create_task(14, trigger="test")
+    task = database.claim_next_task("test-worker")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+
+    class FakeMailboxVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            assert email == "disabled@outlook.com"
+            assert password == "mail-secret"
+            return MailboxEvidence(
+                provider="outlook.office365.com",
+                subject="Your OpenAI account has been deactivated",
+                received_at=None,
+                excerpt="Your account has been deactivated.",
+            )
+
+    coordinator.mailbox_verifier = FakeMailboxVerifier()
+    monkeypatch.setattr(
+        "app.recovery.render_mailbox_evidence_screenshot",
+        lambda evidence, settings: b"\x89PNG\r\n\x1a\nmailbox-evidence",
+    )
+
+    coordinator.automatic_browser.run = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AutomaticBrowserError(
+            "OpenAI account is disabled or deleted (account_deactivated)",
+            stage="account_disabled",
+            retryable=False,
+            evidence=b"\x89PNG\r\n\x1a\naccount-disabled-page",
+        )
+    )
+    coordinator.execute_task(task)
+
+    mailbox_log = next(
+        log
+        for log in database.list_logs(task_id)
+        if log["stage"] == "mailbox_verification" and log.get("detail", {}).get("message_found")
+    )
+    assert mailbox_log["detail"]["message_found"] is True
+    assert mailbox_log["detail"]["screenshot_kind"] == "mailbox_message"
+    assert database.get_task_evidence(task_id, mailbox_log["detail"]["evidence_id"])["image"] == b"\x89PNG\r\n\x1a\nmailbox-evidence"
+    assert database.task_has_disabled_page_evidence(task_id)
+
+
+def test_mailbox_login_failure_is_saved_without_changing_disabled_classification(database, settings):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 15, "email": "unavailable@outlook.com", "status": "auth_failed"}
+    )
+    database.save_credentials(
+        15,
+        {"email": "unavailable@outlook.com", "email_password": "mail-secret"},
+    )
+    task_id, _ = database.create_task(15, trigger="test")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+
+    class RejectingMailboxVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            raise MailboxError(
+                "IMAP mailbox credentials were rejected",
+                retryable=False,
+                code="credentials_rejected",
+            )
+
+    coordinator.mailbox_verifier = RejectingMailboxVerifier()
+    coordinator._verify_disabled_account_mailbox(
+        task_id,
+        NoteCredentials(email="unavailable@outlook.com", email_password="mail-secret"),
+    )
+
+    mailbox = database.list_mailboxes()[0]
+    assert mailbox["status"] == "login_failed"
+    assert mailbox["last_error"] == "IMAP mailbox credentials were rejected"
+    assert database.get_mapping(15)["status"] == "auth_failed"
 
 
 def test_disabled_browser_automation_uses_manual_authorization(database, settings):

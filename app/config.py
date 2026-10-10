@@ -77,6 +77,7 @@ DASHBOARD_SETTING_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "mail_imap_folder", "label": "邮箱文件夹", "type": "text"},
             {"key": "mail_code_timeout_seconds", "label": "验证码等待（秒）", "type": "integer", "min": 10, "max": 1800},
             {"key": "mail_poll_seconds", "label": "邮箱轮询间隔（秒）", "type": "integer", "min": 1, "max": 120},
+            {"key": "mail_account_disabled_lookback_days", "label": "封号邮件回溯天数", "type": "integer", "min": 1, "max": 365},
             {"key": "outlook_webmail_enabled", "label": "允许网页邮箱验证码兜底", "type": "boolean"},
         ),
     },
@@ -208,6 +209,7 @@ class Settings(BaseSettings):
     mail_imap_folder: str = "INBOX"
     mail_code_timeout_seconds: int = 150
     mail_poll_seconds: int = 5
+    mail_account_disabled_lookback_days: int = 30
     outlook_webmail_enabled: bool = True
 
     def validate_runtime(self, *, require_sub2api: bool = True) -> None:

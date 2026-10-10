@@ -12,6 +12,7 @@ from .browser import PlaywrightOAuthRunner
 from .classifier import Classification, FailureClass, classify_account_snapshot, classify_failure
 from .config import Settings
 from .db import Database
+from .mailbox import ImapAccountDisabledReader, MailboxError, render_mailbox_evidence_screenshot
 from .note_credentials import NoteCredentials, parse_account_notes
 from .oauth import OAuthError, OpenAIOAuthClient, TokenSet, build_authorization_url, generate_pkce
 from .redaction import safe_error
@@ -56,6 +57,7 @@ class RecoveryCoordinator:
         self.settings = runtime.settings
         self.browser = PlaywrightOAuthRunner(runtime.settings)
         self.automatic_browser = AutomaticOAuthRunner(runtime.settings)
+        self.mailbox_verifier = ImapAccountDisabledReader(runtime.settings)
         self._scan_lock = threading.Lock()
 
     def reconfigure(self, sub2api: Sub2APIClient, oauth: OpenAIOAuthClient) -> None:
@@ -65,6 +67,7 @@ class RecoveryCoordinator:
         self.runtime = RecoveryRuntime(self.db, sub2api, oauth, self.settings)
         self.browser = PlaywrightOAuthRunner(self.settings)
         self.automatic_browser = AutomaticOAuthRunner(self.settings)
+        self.mailbox_verifier = ImapAccountDisabledReader(self.settings)
 
     def scan(self, *, source: str = "worker") -> dict[str, int]:
         if not self._scan_lock.acquire(blocking=False):
@@ -1051,6 +1054,7 @@ class RecoveryCoordinator:
                             evidence_error = safe_error(save_error)
                     elif not evidence_error:
                         evidence_error = "The browser did not provide a screenshot"
+                    self._verify_disabled_account_mailbox(task_id, material)
                 session_id = self.db.get_task(task_id).get("auth_session_id") if self.db.get_task(task_id) else None
                 if session_id:
                     self.db.complete_oauth_session(str(session_id), status="failed", error_reason=message)
@@ -1129,7 +1133,6 @@ class RecoveryCoordinator:
                 "Refresh token is not usable; administrator action is required",
                 {"session_id": session["id"]},
             )
-
         except Exception as exc:
             self.db.finish_task(
                 task_id,
@@ -1138,6 +1141,97 @@ class RecoveryCoordinator:
                 failure_class=classification.category.value,
                 error_reason=safe_error(exc),
             )
+
+    def _verify_disabled_account_mailbox(self, task_id: str, material: NoteCredentials) -> None:
+        """Check the linked mailbox after an OpenAI disabled-page detection."""
+        email_address = material.email.strip().lower()
+        email_password = material.email_password.strip()
+        if email_address and not email_password:
+            mailbox = self.db.get_mailbox_secret_by_email(email_address)
+            if mailbox:
+                email_password = str(mailbox.get("password") or "").strip()
+        if not email_address or not email_password:
+            self._log(
+                task_id,
+                "mailbox_verification",
+                "未配置邮箱密码，跳过 OpenAI 封号邮件核验。",
+                detail={"mailbox_checked": False, "reason": "missing_mailbox_credentials"},
+                level="WARNING",
+            )
+            return
+        self._log(task_id, "mailbox_verification", "正在登录关联邮箱并核验 OpenAI 封号邮件。")
+        since = datetime.now(timezone.utc) - timedelta(
+            days=max(1, int(self.settings.mail_account_disabled_lookback_days))
+        )
+        try:
+            evidence = self.mailbox_verifier.find_account_disabled_message(
+                email_address,
+                email_password,
+                since=since,
+            )
+        except MailboxError as exc:
+            mailbox_status = "login_failed" if exc.code == "credentials_rejected" else None
+            if mailbox_status:
+                self.db.mark_mailbox_status(
+                    email_address,
+                    mailbox_status,
+                    error=exc.reason,
+                )
+            self._log(
+                task_id,
+                "mailbox_verification",
+                "邮箱登录或封号邮件核验失败，不改变账号停用结论。",
+                detail={
+                    "mailbox_checked": True,
+                    "login_succeeded": False,
+                    "mailbox_status": mailbox_status,
+                    "reason": safe_error(exc),
+                },
+                level="WARNING",
+            )
+            return
+        except Exception as exc:
+            self._log(
+                task_id,
+                "mailbox_verification",
+                "邮箱封号邮件核验发生异常，不改变账号停用结论。",
+                detail={"mailbox_checked": False, "reason": safe_error(exc)},
+                level="WARNING",
+            )
+            return
+        self.db.mark_mailbox_status(email_address, "available")
+        if evidence is None:
+            self._log(
+                task_id,
+                "mailbox_verification",
+                "邮箱中未找到近期 OpenAI 账号停用邮件。",
+                detail={"mailbox_checked": True, "message_found": False},
+            )
+            return
+        evidence_id = None
+        screenshot_error = None
+        try:
+            screenshot = render_mailbox_evidence_screenshot(evidence, self.settings)
+            evidence_id = self.db.save_task_evidence(task_id, screenshot)
+        except Exception as exc:
+            screenshot_error = safe_error(exc)
+        detail = {
+            "mailbox_checked": True,
+            "message_found": True,
+            "message_kind": "account_disabled",
+            "mailbox_provider": evidence.provider,
+            "received_at": evidence.received_at.isoformat(timespec="seconds") if evidence.received_at else None,
+            "screenshot_kind": "mailbox_message",
+        }
+        if evidence_id:
+            detail["evidence_id"] = evidence_id
+            detail["screenshot_saved"] = True
+            message = "邮箱中检测到 OpenAI 账号停用邮件，已保存核验截图。"
+        else:
+            detail["screenshot_saved"] = False
+            detail["screenshot_error"] = screenshot_error or "unknown screenshot error"
+            message = "邮箱中检测到 OpenAI 账号停用邮件，但核验截图保存失败。"
+        self._log(task_id, "mailbox_verification", message, detail=detail, level="WARNING")
 
     @staticmethod
     def _remote_chatgpt_account_id(account: dict[str, Any]) -> str:
@@ -1523,7 +1617,7 @@ class RecoveryCoordinator:
                 raise ValueError(
                     f"Sub2API account {account_id} is not confirmed as disabled; no accounts were deleted"
                 )
-            if not self.db.task_has_evidence(str(task["id"])):
+            if not self.db.task_has_disabled_page_evidence(str(task["id"])):
                 raise ValueError(
                     f"Sub2API account {account_id} has no saved disabled-page screenshot; no accounts were deleted"
                 )

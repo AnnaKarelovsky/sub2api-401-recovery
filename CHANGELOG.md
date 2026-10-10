@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.19 - 2026-10-09
+
+- Centered compact, wide, and update modal panels consistently inside their dialog containers.
+- Refreshed the static asset cache key so the dialog layout fix is loaded immediately.
+- Added mailbox verification after an OpenAI disabled-page detection, with encrypted evidence screenshots for matching status emails.
+- Added independent mailbox-pool status tracking for rejected credentials, while leaving temporary connection failures unchanged.
+
 ## 0.4.18 - 2026-10-09
 
 - Rendered release notes as readable headings and lists instead of exposing raw Markdown syntax.
