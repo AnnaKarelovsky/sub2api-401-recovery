@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sub2API 401 Recovery</title>
-    <link rel="stylesheet" href="/static/style.css?v=sidebar-icon-refresh" />
+    <title>401 Recovery | Sub2API</title>
+    <meta name="theme-color" content="#0d7d79" />
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg?v=branding-refresh" />
+    <link rel="stylesheet" href="/static/style.css?v=region-blocked" />
   </head>
   <body>
     <div id="login-view" class="login-shell">
       <form id="login-form" class="login-panel">
-        <div class="brand-mark">S2</div>
+        <div class="brand-mark"><img class="brand-logo" src="/static/logo.svg?v=branding-refresh" alt="401 Recovery" /></div>
         <h1>401 Recovery</h1>
         <label>管理员账号<input id="login-username" autocomplete="username" required /></label>
         <label>管理员密码<input id="login-password" type="password" autocomplete="current-password" required /></label>
@@ -22,7 +24,7 @@
       <div class="app-layout">
         <aside class="sidebar" aria-label="主导航">
           <div class="sidebar-main">
-            <div class="sidebar-brand"><span class="brand-mark small">S2</span><div class="sidebar-brand-copy"><strong>401 Recovery</strong><button id="version-button" class="version-button" type="button" aria-label="查看版本和更新"><span id="current-version">__APP_VERSION__</span><span id="update-badge" class="update-badge hidden">新版本</span></button></div></div>
+            <div class="sidebar-brand"><span class="brand-mark small"><img class="brand-logo" src="/static/logo.svg?v=branding-refresh" alt="" /></span><div class="sidebar-brand-copy"><strong>401 Recovery</strong><button id="version-button" class="version-button" type="button" aria-label="查看版本和更新"><span id="current-version">__APP_VERSION__</span><span id="update-badge" class="update-badge hidden">新版本</span></button></div></div>
             <nav class="main-nav">
               <button class="nav-item active" type="button" data-view-target="console"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22v-6h6v6"/></svg></span><span>恢复控制台</span></button>
               <button class="nav-item" type="button" data-view-target="accounts"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span>账号</span></button>
@@ -39,12 +41,12 @@
 
         <main class="workspace">
           <section id="view-console" class="view-section">
-            <header class="console-header"><div class="console-header-copy"><h2>恢复控制台</h2></div><div class="console-header-actions"><button id="refresh-button" class="button secondary console-action" type="button"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-15.3-6.5L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15.3 6.5L21 16"/><path d="M21 21v-5h-5"/></svg></span><span class="console-action-label">刷新</span></button><button id="scan-button" class="button primary console-action" type="button"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/><path d="M8 11h6M11 8v6"/></svg></span><span class="console-action-label">立即扫描</span></button></div></header>
+            <header class="console-header"><div class="console-header-copy"><h2>恢复控制台</h2></div><div class="console-header-actions"><button id="refresh-button" class="button secondary console-action" type="button" aria-label="刷新数据" title="刷新数据：只重新读取当前结果，不触发账号扫描"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-15.3-6.5L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15.3 6.5L21 16"/><path d="M21 21v-5h-5"/></svg></span><span class="console-action-label">刷新数据</span></button><button id="scan-button" class="button primary console-action" type="button" aria-label="扫描账号" title="扫描账号：从 Sub2API 重新读取账号并检查状态，可能需要较长时间"><span class="nav-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/><path d="M8 11h6M11 8v6"/></svg></span><span class="console-action-label">扫描账号</span></button></div></header>
             <section id="metrics" class="metrics-grid"></section>
             <section class="console-workbench" aria-label="账号恢复工作台">
               <div class="console-pane account-picker-pane">
-                <div class="pane-heading"><div><h3>需要关注</h3></div><div class="pane-heading-actions"><span id="console-account-count" class="pane-count">0 项</span><button id="new-account-button" class="button secondary" type="button">新增账号</button></div></div>
-                <div class="console-tools"><input id="console-account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索工作台账号" /><select id="console-account-filter" aria-label="筛选工作台账号"><option value="attention">需要关注</option><option value="">全部账号</option><option value="account_disabled">账号已删除或停用</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="retry_wait">等待重试</option><option value="reauth_required">等待授权</option><option value="automation_blocked">材料不足</option><option value="account_replaced">已创建新账号</option><option value="healthy">正常</option></select></div>
+                <div class="pane-heading"><div><h3 id="console-account-heading">需要处理</h3></div><div class="pane-heading-actions"><span id="console-account-count" class="pane-count">0 项</span><button id="new-account-button" class="button secondary" type="button">新增账号</button></div></div>
+                <div class="console-tools"><input id="console-account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索工作台账号" /><select id="console-account-filter" aria-label="按账号分组筛选"><option value="attention">需要处理</option><option value="">全部账号</option><option value="processing">处理中</option><option value="normal">正常账号</option></select></div>
                 <div id="console-account-list" class="console-account-list"></div>
                 <div id="console-accounts-empty" class="empty hidden">没有匹配账号。</div>
               </div>
@@ -62,7 +64,7 @@
           </section>
 
           <section id="view-accounts" class="view-section content-section hidden">
-            <div class="section-heading compact-heading"><div><h3>账号</h3></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号状态筛选"><option value="">全部状态</option><option value="account_disabled">账号已删除或停用</option><option value="account_replaced">已创建新账号</option><option value="auth_failed">认证失败</option><option value="account_error">账号异常</option><option value="recovering">恢复中</option><option value="retry_wait">等待重试</option><option value="reauth_required">等待授权</option><option value="automation_blocked">材料不足</option><option value="observed">需关注</option><option value="healthy">正常</option><option value="unknown">未知</option></select><button id="delete-disabled-selected" class="button danger" type="button" disabled>删除已选停用账号（0）</button></div></div>
+            <div class="section-heading compact-heading"><div><h3>账号</h3></div><div class="section-tools"><input id="account-search" type="search" placeholder="搜索邮箱或 ID" aria-label="搜索账号" /><select id="account-filter" aria-label="按账号分组筛选"><option value="">全部账号</option><option value="attention">需要处理</option><option value="processing">处理中</option><option value="normal">正常账号</option></select><button id="delete-disabled-selected" class="button danger" type="button" disabled>删除已选停用账号（0）</button></div></div>
             <p id="account-delete-status" class="muted account-delete-status" role="status"></p>
             <div class="table-wrap"><table><thead><tr id="accounts-head"><th class="selection-column"><input id="select-all-disabled" type="checkbox" aria-label="全选当前显示的已确认停用账号" /></th><th>账号</th><th>Sub2API ID</th><th>状态</th><th>自动登录材料</th><th>凭据</th><th>最近 401</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table></div>
             <div id="accounts-empty" class="empty hidden">还没有同步到 OpenAI OAuth 账号。</div>
@@ -75,7 +77,7 @@
           </section>
 
           <section id="view-mailboxes" class="view-section content-section hidden">
-            <div class="section-heading compact-heading"><div><h3>邮箱池</h3></div><div class="section-tools"><input id="mailbox-search" type="search" placeholder="搜索邮箱" aria-label="搜索邮箱池" /><button id="new-mailbox-button" class="button primary" type="button">新增邮箱</button></div></div>
+            <div class="section-heading compact-heading"><div><h3>邮箱池</h3></div><div class="section-tools"><input id="mailbox-search" type="search" placeholder="搜索邮箱" aria-label="搜索邮箱池" /><select id="verification-mailbox-select" aria-label="选择微软验证邮箱"><option value="">使用运行配置邮箱</option></select><button id="verify-mailboxes-button" class="button secondary" type="button">验证需处理邮箱</button><button id="new-mailbox-button" class="button primary" type="button">新增邮箱</button></div></div>
             <div class="table-wrap"><table><thead><tr><th>邮箱</th><th>邮箱密码</th><th>来源账号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="mailboxes-body"></tbody></table></div>
             <div id="mailboxes-empty" class="empty hidden">还没有可用邮箱。</div>
           </section>
@@ -174,6 +176,6 @@
         <div class="dialog-actions"><button id="check-update" class="button secondary" type="button">检查更新</button><a id="release-link" class="button quiet hidden" target="_blank" rel="noreferrer">发行说明</a><button id="start-update" class="button primary" type="button" disabled>立即更新</button></div>
       </form>
     </dialog>
-    <script src="/static/app.js?v=sidebar-icon-refresh" defer></script>
+    <script src="/static/app.js?v=region-blocked" defer></script>
   </body>
 </html>

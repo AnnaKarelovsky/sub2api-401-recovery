@@ -3,10 +3,20 @@ from __future__ import annotations
 import imaplib
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.mailbox import ImapAccountDisabledReader, ImapCodeReader, MailboxError, OutlookWebCodeReader
+from app.mailbox import (
+    ImapAccountDisabledReader,
+    ImapCodeReader,
+    MailboxError,
+    Netease163WebCodeReader,
+    MailboxEvidence,
+    OutlookWebAccountDisabledReader,
+    OutlookWebCodeReader,
+    render_mailbox_evidence_screenshot,
+)
 from app.note_credentials import NoteCredentials, parse_account_notes
 from app.totp import normalize_totp_secret, totp_code
 from app.automatic_browser import AutomaticBrowserError, AutomaticOAuthRunner
@@ -56,6 +66,133 @@ def test_totp_matches_rfc6238_vector():
 
 def test_security_page_markers_are_classified_for_retry():
     assert AutomaticOAuthRunner._is_security_error("Oops, an error occurred. Try again")
+
+
+def test_microsoft_security_rate_limit_is_detected():
+    assert OutlookWebAccountDisabledReader._is_security_rate_limited(
+        "You've requested too many codes today. Please try again tomorrow."
+    )
+    assert OutlookWebAccountDisabledReader._is_security_rate_limited("请求次数过多，请明天再试")
+    assert not OutlookWebAccountDisabledReader._is_security_rate_limited("Enter the security code")
+
+
+def test_security_email_code_prompt_accepts_mailbox_copy_variants():
+    assert OutlookWebAccountDisabledReader._is_email_code_prompt("检查你的邮箱并输入邮件中的代码")
+    assert OutlookWebAccountDisabledReader._is_email_code_prompt("Enter the code we sent")
+
+
+def test_outlook_account_disabled_reader_searches_and_captures_the_matching_email(settings):
+    screenshot = b"\x89PNG\r\n\x1a\nsource-mail-screenshot"
+
+    class Search:
+        def __init__(self):
+            self.values = []
+
+        def is_visible(self, timeout=None):
+            return True
+
+        def fill(self, value):
+            self.values.append(value)
+
+        def press(self, key, timeout=None):
+            assert key == "Enter"
+
+    class Candidate:
+        def is_visible(self, timeout=None):
+            return True
+
+        def inner_text(self, timeout=None):
+            return "OpenAI account deactivated 10/14/2026 9:30 AM"
+
+        def evaluate(self, script):
+            return ["2026-10-14T09:30:00+08:00"]
+
+        def click(self, timeout=None):
+            return None
+
+    class Group:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
+
+    class Body:
+        def inner_text(self, timeout=None):
+            return "Your OpenAI account has been deactivated."
+
+    class Page:
+        url = "https://outlook.live.com/mail/0/inbox"
+
+        def __init__(self):
+            self.search = Search()
+
+        def locator(self, selector):
+            if selector == "input[placeholder='Search']":
+                return Group([self.search])
+            if selector == "body":
+                return Body()
+            return Group([])
+
+        def get_by_role(self, role):
+            assert role == "option"
+            return Group([Candidate()])
+
+        def get_by_text(self, pattern, exact=False):
+            return Group([])
+
+        def wait_for_timeout(self, timeout):
+            return None
+
+        def screenshot(self, **kwargs):
+            return screenshot
+
+    page = Page()
+    evidence = OutlookWebAccountDisabledReader(settings)._search_for_account_disabled_message(
+        page,
+        since=datetime(2026, 10, 13, tzinfo=timezone.utc),
+        submit=True,
+    )
+
+    assert isinstance(evidence, MailboxEvidence)
+    assert evidence.screenshot == screenshot
+    assert page.search.values == ["", "OpenAI"]
+    assert render_mailbox_evidence_screenshot(evidence, settings) == screenshot
+
+
+def test_outlook_web_code_reader_parses_locale_received_time(settings):
+    reader = OutlookWebCodeReader(settings)
+    parsed = reader._parse_received_time("10/14/2026, 3:50 PM")
+    assert parsed == datetime(2026, 10, 14, 15, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def test_outlook_web_code_reader_parses_chinese_relative_received_time(settings, monkeypatch):
+    reader = OutlookWebCodeReader(settings)
+    monkeypatch.setattr("app.mailbox.datetime", datetime)
+    assert reader._parse_received_time("今天 16:47") is not None
+
+
+def test_outlook_web_code_reader_requires_trusted_recent_microsoft_mail(settings):
+    reader = OutlookWebCodeReader(settings)
+    since = datetime(2026, 10, 14, 7, 0, tzinfo=timezone.utc)
+    sender = "Microsoft account team <account-security-noreply@accountprotection.microsoft.com>"
+    body = "Microsoft account Security code: 1234567"
+
+    assert reader._extract_security_code(
+        sender, body, received_at=since, since=since
+    ) == "1234567"
+    assert reader._extract_security_code(
+        "attacker@example.com", body, received_at=since, since=since
+    ) == ""
+    assert reader._extract_security_code(
+        sender,
+        body,
+        received_at=since.replace(hour=6),
+        since=since,
+    ) == ""
 
 
 def test_verification_code_errors_are_detected_without_logging_the_code():
@@ -186,6 +323,14 @@ def test_mfa_denials_stop_blind_retries_except_transient_categories():
     assert retryable
 
 
+def test_mfa_response_body_can_identify_deleted_account_without_rendered_error_page():
+    response = SimpleNamespace(
+        text=lambda: '{"error_code":"account_deactivated"}',
+    )
+
+    assert AutomaticOAuthRunner._response_indicates_account_disabled(response)
+
+
 def test_mfa_http_denial_is_reported_as_terminal_totp_failure(settings):
     runner = AutomaticOAuthRunner(settings)
     page = SimpleNamespace(
@@ -286,6 +431,26 @@ def test_outlook_webmail_diagnostic_redacts_dynamic_url_values():
     assert "path=/mail/[id]/" in reason
     assert "login.live.com/authorize HTTP 302" in reason
     assert "private-value" not in reason
+
+
+def test_outlook_webmail_security_prompt_is_classified_without_calling_it_a_password_error():
+    assert OutlookWebAccountDisabledReader._is_security_prompt("帮助保护你的帐户 添加电子邮件")
+    assert OutlookWebAccountDisabledReader._is_add_email_prompt("帮助保护你的帐户 添加电子邮件")
+    assert OutlookWebAccountDisabledReader._is_add_email_prompt("Help protect your account Add email")
+    assert not OutlookWebAccountDisabledReader._is_add_email_prompt("Verify your identity")
+    assert OutlookWebAccountDisabledReader._is_human_challenge("Verify you are human")
+    assert not OutlookWebAccountDisabledReader._is_login_rejection("帮助保护你的帐户")
+    assert OutlookWebAccountDisabledReader._is_login_rejection("Incorrect password")
+    assert OutlookWebAccountDisabledReader._is_security_url(
+        "https://account.live.com/interrupt/credentialaction?opaque=value"
+    )
+
+
+def test_openai_oauth_region_error_is_classified_as_a_blocked_environment():
+    assert AutomaticOAuthRunner._is_region_error(
+        '{"error":{"code":"unsupported_country_region_territory"}}'
+    )
+    assert not AutomaticOAuthRunner._is_region_error("Welcome back")
 
 
 def test_page_diagnostic_classifies_link_without_recording_its_text():
@@ -519,6 +684,125 @@ def test_imap_reader_extracts_recent_openai_code(settings):
     ) == "123456"
 
 
+def test_imap_reader_extracts_microsoft_security_code_from_163(settings):
+    message = (
+        b"Date: Wed, 16 Sep 2026 06:00:00 +0000\r\n"
+        b"From: Microsoft account security code <account-security-noreply@accountprotection.microsoft.com>\r\n"
+        b"Subject: Microsoft account security code\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"Use this code to verify your email: 1234567."
+    )
+    connection_args = []
+
+    def connect(*args, **kwargs):
+        connection_args.append(args)
+        return FakeImap(message)
+
+    reader = ImapCodeReader(settings, connection_factory=connect)
+
+    assert reader.wait_for_code(
+        "owner@163.com",
+        "imap-auth-code",
+        since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
+        purpose="microsoft_security",
+    ) == "1234567"
+    assert connection_args[0][0] == "imap.163.com"
+
+
+def test_imap_access_preflight_selects_inbox_read_only(settings):
+    calls = []
+
+    class TrackingImap(FakeImap):
+        def select(self, folder, readonly=True):
+            calls.append((folder, readonly))
+            return "OK", []
+
+    reader = ImapCodeReader(settings, connection_factory=lambda *args, **kwargs: TrackingImap(b""))
+    reader.validate_access("owner@163.com", "imap-auth-code")
+
+    assert calls == [("INBOX", True)]
+
+
+def test_163_webmail_reader_only_extracts_recent_microsoft_security_codes(settings):
+    reader = Netease163WebCodeReader(settings)
+    since = datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc)
+    message = (
+        "Microsoft account security code "
+        "account-security-noreply@accountprotection.microsoft.com "
+        "Your security code is 1234567."
+    )
+
+    assert reader._extract_code(message, received_at=since, since=since) == "1234567"
+    assert reader._extract_code(message, received_at=since.replace(hour=9), since=since) == ""
+    assert reader._extract_code(
+        message.replace("account-security-noreply@accountprotection.microsoft.com", "attacker@example.net"),
+        received_at=since,
+        since=since,
+    ) == ""
+    assert reader._extract_code_from_bodies(
+        [
+            "Microsoft account security code account-security-noreply@accountprotection.microsoft.com",
+            "Your security code is 1234567.",
+        ],
+        received_at=since,
+        since=since,
+    ) == "1234567"
+
+
+def test_163_webmail_reader_parses_localized_received_time():
+    class Candidate:
+        def evaluate(self, _script):
+            return ["2026/10/13 18:30"]
+
+    assert Netease163WebCodeReader._message_received_at(Candidate()) == datetime(
+        2026, 10, 13, 10, 30, tzinfo=timezone.utc
+    )
+    assert Netease163WebCodeReader._parse_received_text("主题 2026/10/13 18:30 发件人") == datetime(
+        2026, 10, 13, 10, 30, tzinfo=timezone.utc
+    )
+
+
+def test_163_webmail_reader_allows_minute_precision_overlap():
+    reader = Netease163WebCodeReader(None)
+    message = (
+        "Microsoft account security code "
+        "account-security-noreply@accountprotection.microsoft.com "
+        "Your security code is 1234567."
+    )
+    since = datetime(2026, 10, 13, 10, 30, 42, tzinfo=timezone.utc)
+
+    assert reader._extract_code(
+        message,
+        received_at=datetime(2026, 10, 13, 10, 30, tzinfo=timezone.utc),
+        since=since,
+    ) == "1234567"
+    assert reader._extract_code(
+        message,
+        received_at=datetime(2026, 10, 13, 10, 28, 59, tzinfo=timezone.utc),
+        since=since,
+    ) == ""
+
+
+def test_microsoft_code_reader_rejects_untrusted_sender(settings):
+    message = (
+        b"Date: Wed, 16 Sep 2026 06:00:00 +0000\r\n"
+        b"From: attacker@example.net\r\n"
+        b"Subject: Microsoft account security code\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"Use this code to verify your email: 1234567."
+    )
+    reader = ImapCodeReader(settings, connection_factory=lambda *args, **kwargs: FakeImap(message))
+
+    with pytest.raises(MailboxError, match="No new Microsoft security verification code"):
+        reader.wait_for_code(
+            "owner@163.com",
+            "imap-auth-code",
+            since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
+            timeout_seconds=1,
+            purpose="microsoft_security",
+        )
+
+
 def test_imap_reader_finds_recent_openai_disabled_mail(settings):
     message = (
         b"Date: Wed, 16 Sep 2026 06:00:00 +0000\r\n"
@@ -554,5 +838,6 @@ def test_imap_reader_classifies_rejected_credentials(settings):
             since=datetime(2026, 9, 16, 5, 0, tzinfo=timezone.utc),
         )
 
-    assert raised.value.code == "credentials_rejected"
+    assert raised.value.code == "imap_login_rejected"
     assert not raised.value.retryable
+    assert "does not confirm" in raised.value.reason

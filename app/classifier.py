@@ -46,6 +46,14 @@ NETWORK_MARKERS = (
     "tls",
     "no route to host",
 )
+RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate_limited",
+    "usage limit",
+    "usage_limit",
+    "too many requests",
+    "overloaded",
+)
 ACCOUNT_ERROR_MARKERS = (
     "deactivated_workspace",
     "workspace_deactivated",
@@ -102,7 +110,7 @@ def classify_failure(
             True,
             needs_reauthorization=needs_reauth,
         )
-    if http_status == 429 or _has_http_status(combined, 429) or "rate limit" in combined:
+    if http_status == 429 or _has_http_status(combined, 429) or any(marker in combined for marker in RATE_LIMIT_MARKERS):
         return Classification(FailureClass.RATE_LIMIT, _compact_reason(message), False)
     if any(marker in combined for marker in ACCOUNT_ERROR_MARKERS):
         if "deactivated_workspace" in combined or "workspace_deactivated" in combined:

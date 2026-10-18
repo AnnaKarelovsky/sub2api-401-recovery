@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.20 - 2026-10-18
+
+- Classified account-deactivated MFA responses even when the browser error page does not render.
+- Saved browser failure and Outlook security-verification screenshots to recovery logs.
+- Added mailbox security-verification evidence labels and preserved mailbox verification failures without changing account conclusions.
+- Improved Outlook and 163 verification flow diagnostics and added regression coverage.
+
 ## 0.4.19 - 2026-10-09
 
 - Centered compact, wide, and update modal panels consistently inside their dialog containers.

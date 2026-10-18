@@ -50,7 +50,8 @@ h1, h2, h3, h4 { line-height: var(--line-tight); }
 code { font-family: var(--font-mono); font-size: var(--font-meta); line-height: var(--line-body); }
 .hidden { display: none !important; }
 .muted { color: var(--muted); margin: 0; }
-.brand-mark { align-items: center; background: var(--teal); border-radius: 7px; color: white; display: inline-flex; font-size: 15px; font-weight: 800; height: 42px; justify-content: center; width: 42px; }
+.brand-mark { align-items: center; background: var(--teal); border-radius: 7px; color: white; display: inline-flex; flex: 0 0 auto; height: 42px; justify-content: center; overflow: hidden; width: 42px; }
+.brand-logo { display: block; height: 100%; width: 100%; }
 .brand-mark.small { font-size: 11px; height: 28px; width: 28px; }
 .login-shell { align-items: center; display: flex; justify-content: center; min-height: 100vh; padding: 24px; }
 .login-panel { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); max-width: 390px; padding: 34px; width: 100%; }
@@ -222,6 +223,8 @@ tr:hover td { background: var(--paper-soft); }
 .mailbox-state.ready { background: #e6f4ed; color: var(--green); }
 .mailbox-state.missing { background: #fff7d8; color: #8a6512; }
 .mailbox-state.failed { background: #fbeaea; color: var(--red); }
+.mailbox-state.warning { background: #fff1e7; color: var(--orange); }
+.mailbox-state.unverified { background: var(--paper-soft); color: var(--muted); }
 .danger-text { color: var(--red) !important; }
 .task-id { color: var(--ink); display: inline-block; font-family: inherit; font-size: var(--font-body); font-weight: 650; line-height: var(--line-body); }
 .task-history { color: var(--muted); font-size: var(--font-meta); margin-top: 3px; }
@@ -327,6 +330,8 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 :root[data-theme="dark"] .mailbox-state.ready { background: rgba(104, 208, 157, .16); color: var(--green); }
 :root[data-theme="dark"] .mailbox-state.missing { background: rgba(224, 190, 76, .16); color: #f0cd69; }
 :root[data-theme="dark"] .mailbox-state.failed { background: rgba(240, 122, 122, .15); color: var(--red); }
+:root[data-theme="dark"] .mailbox-state.warning { background: rgba(241, 154, 98, .15); color: var(--orange); }
+:root[data-theme="dark"] .mailbox-state.unverified { background: rgba(170, 183, 189, .15); color: #b5c1c6; }
 :root[data-theme="dark"] .state.auth_failed, :root[data-theme="dark"] .state.account_error, :root[data-theme="dark"] .state.account_disabled, :root[data-theme="dark"] .state.failed, :root[data-theme="dark"] .timeline-step.error .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
 :root[data-theme="dark"] .state.account_replaced { background: rgba(91, 193, 205, .15); border-color: rgba(91, 193, 205, .42); color: #8ed9df; }
 :root[data-theme="dark"] .inspector-alert.blocked, :root[data-theme="dark"] .timeline-step.blocked .timeline-marker { background: rgba(240, 122, 122, .15); border-color: rgba(240, 122, 122, .42); }
@@ -396,7 +401,9 @@ dialog::backdrop { background: rgba(14, 27, 34, .48); }
 .console-header { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; margin-bottom: 18px; }
 .console-header-copy h2 { font-size: 20px; line-height: var(--line-tight); margin: 0; }
 .console-header-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
-.console-action { align-items: center; display: inline-flex; gap: 6px; }
+.console-action { align-items: center; display: inline-flex; gap: 6px; justify-content: center; min-width: 106px; }
+.console-action-label { white-space: nowrap; }
+.console-action#scan-button { min-width: 112px; }
 .console-action .nav-glyph { font-size: 16px; }
 .metrics-grid { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); gap: 0; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 18px; }
 .metric { background: transparent; border: 0; border-right: 1px solid var(--line); border-radius: 0; min-width: 0; padding: 12px 14px 11px 0; }

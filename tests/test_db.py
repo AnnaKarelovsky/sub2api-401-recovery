@@ -52,23 +52,38 @@ def test_mailbox_pool_survives_account_deletion_and_keeps_password_encrypted(dat
     }
 
 
-def test_mailbox_login_failure_status_survives_same_password_sync(database):
+def test_mailbox_imap_rejection_status_survives_same_password_sync(database):
     mailbox_id = database.upsert_mailbox("mailbox@example.com", "mail-secret")
 
     assert database.mark_mailbox_status(
         "mailbox@example.com",
-        "login_failed",
-        error="mailbox credentials were rejected",
+        "imap_rejected",
+        error="IMAP rejected the mailbox login",
     )
-    assert database.list_mailboxes()[0]["status"] == "login_failed"
+    assert database.list_mailboxes()[0]["status"] == "imap_rejected"
 
     database.upsert_mailbox("mailbox@example.com", "mail-secret")
-    assert database.get_mailbox(mailbox_id)["status"] == "login_failed"
+    assert database.get_mailbox(mailbox_id)["status"] == "imap_rejected"
 
     database.upsert_mailbox("mailbox@example.com", "new-mail-secret")
     updated = database.get_mailbox(mailbox_id)
     assert updated["status"] == "unknown"
     assert updated["last_error"] is None
+
+
+def test_legacy_mailbox_login_failed_status_is_migrated_to_imap_rejected(database):
+    mailbox_id = database.upsert_mailbox("legacy@example.com", "mail-secret")
+    database.mark_mailbox_status(
+        "legacy@example.com",
+        "login_failed",
+        error="IMAP mailbox credentials were rejected",
+    )
+
+    database.initialize()
+
+    migrated = database.get_mailbox(mailbox_id)
+    assert migrated["status"] == "imap_rejected"
+    assert migrated["last_error"] == "IMAP login was rejected; webmail password validity is unconfirmed"
 
 
 def test_mailbox_evidence_does_not_count_as_disabled_page_evidence(database):

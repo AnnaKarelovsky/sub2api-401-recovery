@@ -12,7 +12,14 @@ from .browser import PlaywrightOAuthRunner
 from .classifier import Classification, FailureClass, classify_account_snapshot, classify_failure
 from .config import Settings
 from .db import Database
-from .mailbox import ImapAccountDisabledReader, MailboxError, render_mailbox_evidence_screenshot
+from .mailbox import (
+    ImapAccountDisabledReader,
+    MailboxError,
+    Netease163WebCodeReader,
+    OutlookWebAccountDisabledReader,
+    OutlookWebCodeReader,
+    render_mailbox_evidence_screenshot,
+)
 from .note_credentials import NoteCredentials, parse_account_notes
 from .oauth import OAuthError, OpenAIOAuthClient, TokenSet, build_authorization_url, generate_pkce
 from .redaction import safe_error
@@ -58,7 +65,14 @@ class RecoveryCoordinator:
         self.browser = PlaywrightOAuthRunner(runtime.settings)
         self.automatic_browser = AutomaticOAuthRunner(runtime.settings)
         self.mailbox_verifier = ImapAccountDisabledReader(runtime.settings)
+        self.verification_code_reader = _verification_code_reader(runtime.settings)
+        self.webmail_verifier = OutlookWebAccountDisabledReader(
+            runtime.settings,
+            mailbox_lookup=self.db.get_mailbox_secret_by_email,
+            code_reader=self.verification_code_reader,
+        )
         self._scan_lock = threading.Lock()
+        self._mailbox_verification_lock = threading.Lock()
 
     def reconfigure(self, sub2api: Sub2APIClient, oauth: OpenAIOAuthClient) -> None:
         """Swap clients after Dashboard settings were reloaded."""
@@ -68,6 +82,297 @@ class RecoveryCoordinator:
         self.browser = PlaywrightOAuthRunner(self.settings)
         self.automatic_browser = AutomaticOAuthRunner(self.settings)
         self.mailbox_verifier = ImapAccountDisabledReader(self.settings)
+        self.verification_code_reader = _verification_code_reader(self.settings)
+        self.webmail_verifier = OutlookWebAccountDisabledReader(
+            self.settings,
+            mailbox_lookup=self.db.get_mailbox_secret_by_email,
+            code_reader=self.verification_code_reader,
+        )
+
+    def reserve_pending_mailbox_verifications(
+        self,
+        mailbox_ids: list[str] | None = None,
+        *,
+        verification_email: str | None = None,
+    ) -> list[str]:
+        if not self._mailbox_verification_lock.acquire(blocking=False):
+            raise RuntimeError("mailbox verification is already running")
+        try:
+            requested_ids = set(mailbox_ids) if mailbox_ids is not None else None
+            selected_verification_email = (
+                str(verification_email or self.settings.outlook_security_email).strip().lower()
+            )
+            if not selected_verification_email:
+                raise ValueError("请先在运行配置中填写备用验证邮箱。")
+            verification_domain = selected_verification_email.rsplit("@", 1)[-1]
+            if verification_domain != "163.com" and not _is_outlook_mailbox(selected_verification_email):
+                raise ValueError("备用验证邮箱必须是 163 或 Outlook 邮箱池中的邮箱。")
+            verification_mailbox = self.db.get_mailbox_secret_by_email(selected_verification_email)
+            if not verification_mailbox or not verification_mailbox.get("password"):
+                raise ValueError("备用验证邮箱必须先保存在邮箱池并填写密码。")
+            pending = [
+                mailbox
+                for mailbox in self.db.list_mailboxes()
+                if mailbox.get("status") in {"webmail_verification_required", "webmail_verification_in_progress"}
+                and _is_outlook_mailbox(str(mailbox.get("email") or ""))
+                and mailbox.get("has_password")
+                and (requested_ids is None or str(mailbox.get("id")) in requested_ids)
+                and str(mailbox.get("email") or "").strip().lower() != selected_verification_email
+            ]
+            if requested_ids and not pending:
+                requested_mailboxes = [self.db.get_mailbox(mailbox_id) for mailbox_id in requested_ids]
+                if any(
+                    mailbox
+                    and str(mailbox.get("email") or "").strip().lower() == selected_verification_email
+                    for mailbox in requested_mailboxes
+                ):
+                    raise ValueError("目标邮箱不能同时作为自己的备用验证邮箱。")
+            mailbox_ids = [str(mailbox["id"]) for mailbox in pending]
+            if not mailbox_ids:
+                self._mailbox_verification_lock.release()
+            return mailbox_ids
+        except Exception:
+            self._mailbox_verification_lock.release()
+            raise
+
+    def process_mailbox_verification_batch(
+        self,
+        mailbox_ids: list[str],
+        verification_email: str | None = None,
+    ) -> None:
+        verification_email = str(verification_email or self.settings.outlook_security_email).strip().lower()
+        batch_settings = self.settings.model_copy(update={"outlook_security_email": verification_email})
+        if verification_email == self.settings.outlook_security_email.strip().lower():
+            verification_code_reader = self.verification_code_reader
+            webmail_verifier = self.webmail_verifier
+        else:
+            verification_code_reader = _verification_code_reader(batch_settings)
+            webmail_verifier = OutlookWebAccountDisabledReader(
+                batch_settings,
+                mailbox_lookup=self.db.get_mailbox_secret_by_email,
+                code_reader=verification_code_reader,
+            )
+        verification_mailbox = self.db.get_mailbox_secret_by_email(verification_email)
+        verification_password = str((verification_mailbox or {}).get("password") or "").strip()
+        try:
+            self.db.record_event(
+                "mailbox_verification_batch_started",
+                "Started sequential Microsoft security email verification",
+                {"count": len(mailbox_ids)},
+            )
+            try:
+                if _is_outlook_mailbox(verification_email):
+                    webmail_verifier.find_account_disabled_message(
+                        verification_email,
+                        verification_password,
+                        since=datetime.now(timezone.utc) - timedelta(days=1),
+                    )
+                else:
+                    verification_code_reader.validate_access(verification_email, verification_password)
+            except MailboxError as exc:
+                source_status = (
+                    "webmail_rejected"
+                    if exc.code in {"163_login_rejected", "webmail_login_rejected", "credentials_rejected"}
+                    else "webmail_unavailable"
+                )
+                self.db.mark_mailbox_status(verification_email, source_status, error=exc.reason)
+                self.db.record_event(
+                    "verification_mailbox_login_failed",
+                    "Configured security verification mailbox could not be opened",
+                    {"status": source_status, "reason": exc.reason},
+                )
+                return
+            self.db.mark_mailbox_status(verification_email, "available")
+            # Release any persistent webmail reader before opening the target
+            # Outlook browser used for the verification flow.
+            close_reader = getattr(verification_code_reader, "close_session", None)
+            if close_reader:
+                close_reader()
+            for mailbox_id in mailbox_ids:
+                mailbox = self.db.get_mailbox(mailbox_id)
+                if not mailbox:
+                    continue
+                email_address = str(mailbox.get("email") or "").strip().lower()
+                if not _is_outlook_mailbox(email_address):
+                    continue
+                self.db.mark_mailbox_status(email_address, "webmail_verification_in_progress")
+                secret = self.db.get_mailbox_secret(mailbox_id)
+                password = str((secret or {}).get("password") or "").strip()
+                source_account_id = mailbox.get("source_account_id")
+                source_task = None
+                if source_account_id is not None:
+                    source_task = self.db.latest_account_disabled_task(int(source_account_id))
+                    # A mailbox can be verified after a failed TOTP/password task
+                    # has already established the account association. Keep the
+                    # evidence visible on that latest task instead of dropping it.
+                    source_task = source_task or self.db.latest_task_for_account(int(source_account_id))
+                if not password:
+                    self.db.mark_mailbox_status(
+                        email_address,
+                        "webmail_unavailable",
+                        error="Outlook mailbox password is missing",
+                    )
+                    self._append_batch_mailbox_log(
+                        source_task,
+                        level="WARNING",
+                        message="邮箱池中的邮箱缺少密码，未能核验 OpenAI 账号停用通知。",
+                        detail={"mailbox_checked": False, "message_found": False, "reason": "missing_mailbox_password"},
+                    )
+                    continue
+                try:
+                    evidence = webmail_verifier.find_account_disabled_message(
+                        email_address,
+                        password,
+                        since=datetime.now(timezone.utc)
+                        - timedelta(days=max(1, int(batch_settings.mail_account_disabled_lookback_days))),
+                    )
+                except MailboxError as exc:
+                    status = (
+                        "webmail_rejected"
+                        if exc.code == "webmail_login_rejected"
+                        else (
+                            "webmail_verification_required"
+                            if exc.code.startswith(("webmail_security", "webmail_human", "verification_mailbox"))
+                            else "webmail_unavailable"
+                        )
+                    )
+                    self.db.mark_mailbox_status(email_address, status, error=exc.reason)
+                    self.db.record_event(
+                        "mailbox_verification_failed",
+                        "Microsoft mailbox verification did not complete",
+                        {"status": status, "reason": exc.reason},
+                    )
+                    evidence_id, evidence_error = self._save_mailbox_error_evidence(
+                        str(source_task["id"]) if source_task else "",
+                        exc,
+                    ) if source_task else (None, exc.evidence_error)
+                    detail = {
+                        "mailbox_checked": False,
+                        "message_found": False,
+                        "access_method": "Outlook Web",
+                        "mailbox_status": status,
+                        "reason": safe_error(exc),
+                    }
+                    if evidence_id:
+                        detail.update(
+                            {
+                                "evidence_id": evidence_id,
+                                "screenshot_kind": "mailbox_security",
+                                "screenshot_saved": True,
+                            }
+                        )
+                    elif evidence_error:
+                        detail.update(
+                            {
+                                "screenshot_saved": False,
+                                "screenshot_error": evidence_error,
+                            }
+                        )
+                    self._append_batch_mailbox_log(
+                        source_task,
+                        level="WARNING",
+                        message="未能读取邮箱中的 OpenAI 账号停用通知；账号停用结论未改变。",
+                        detail=detail,
+                    )
+                except Exception as exc:
+                    self.db.mark_mailbox_status(
+                        email_address,
+                        "webmail_unavailable",
+                        error=safe_error(exc),
+                    )
+                    self.db.record_event(
+                        "mailbox_verification_failed",
+                        "Microsoft mailbox verification failed unexpectedly",
+                        {"status": "webmail_unavailable", "reason": safe_error(exc)},
+                    )
+                    self._append_batch_mailbox_log(
+                        source_task,
+                        level="WARNING",
+                        message="邮箱停用通知核验发生异常；账号停用结论未改变。",
+                        detail={
+                            "mailbox_checked": False,
+                            "message_found": False,
+                            "access_method": "Outlook Web",
+                            "mailbox_status": "webmail_unavailable",
+                            "reason": safe_error(exc),
+                        },
+                    )
+                else:
+                    self.db.mark_mailbox_status(email_address, "available")
+                    self.db.record_event(
+                        "mailbox_verification_succeeded",
+                        "Microsoft mailbox login and inbox access succeeded",
+                    )
+                    if evidence is None:
+                        self._append_batch_mailbox_log(
+                            source_task,
+                            level="INFO",
+                            message="邮箱中未找到近期 OpenAI 账号停用邮件。",
+                            detail={
+                                "mailbox_checked": True,
+                                "message_found": False,
+                                "access_method": "Outlook Web",
+                                "webmail_login_confirmed": True,
+                            },
+                        )
+                        continue
+
+                    evidence_id = None
+                    screenshot_error = None
+                    try:
+                        screenshot = render_mailbox_evidence_screenshot(evidence, batch_settings)
+                        if source_task:
+                            evidence_id = self.db.save_task_evidence(str(source_task["id"]), screenshot)
+                    except Exception as exc:
+                        screenshot_error = safe_error(exc)
+                    detail = {
+                        "mailbox_checked": True,
+                        "message_found": True,
+                        "message_kind": "account_disabled",
+                        "mailbox_provider": evidence.provider,
+                        "received_at": evidence.received_at.isoformat(timespec="seconds") if evidence.received_at else None,
+                        "screenshot_kind": "mailbox_message",
+                        "access_method": "Outlook Web",
+                        "webmail_login_confirmed": True,
+                    }
+                    if evidence_id:
+                        detail["evidence_id"] = evidence_id
+                        detail["screenshot_saved"] = True
+                    else:
+                        detail["screenshot_saved"] = False
+                        detail["screenshot_error"] = screenshot_error or "no matching account-disabled task"
+                    self._append_batch_mailbox_log(
+                        source_task,
+                        level="WARNING",
+                        message=(
+                            "邮箱中检测到 OpenAI 账号停用邮件，已保存核验截图。"
+                            if evidence_id
+                            else "邮箱中检测到 OpenAI 账号停用邮件，但未能关联并保存到账号任务。"
+                        ),
+                        detail=detail,
+                    )
+        finally:
+            close_reader = getattr(verification_code_reader, "close_session", None)
+            if close_reader:
+                close_reader()
+            self._mailbox_verification_lock.release()
+
+    def _append_batch_mailbox_log(
+        self,
+        task: dict[str, Any] | None,
+        *,
+        level: str,
+        message: str,
+        detail: dict[str, Any],
+    ) -> None:
+        if task:
+            self.db.append_log(
+                str(task["id"]),
+                level=level,
+                stage="mailbox_verification",
+                message=message,
+                detail=detail,
+            )
 
     def scan(self, *, source: str = "worker") -> dict[str, int]:
         if not self._scan_lock.acquire(blocking=False):
@@ -1045,20 +1350,31 @@ class RecoveryCoordinator:
                 )
                 evidence_id = None
                 evidence_error = None
-                if account_disabled:
+                if isinstance(exc, AutomaticBrowserError):
                     evidence_error = exc.evidence_error
                     if exc.evidence is not None:
                         try:
                             evidence_id = self.db.save_task_evidence(task_id, exc.evidence)
                         except Exception as save_error:
                             evidence_error = safe_error(save_error)
-                    elif not evidence_error:
+                    elif account_disabled and not evidence_error:
                         evidence_error = "The browser did not provide a screenshot"
+                if account_disabled:
                     self._verify_disabled_account_mailbox(task_id, material)
                 session_id = self.db.get_task(task_id).get("auth_session_id") if self.db.get_task(task_id) else None
                 if session_id:
                     self.db.complete_oauth_session(str(session_id), status="failed", error_reason=message)
                 if isinstance(exc, AutomaticBrowserError) and exc.retryable and self.settings.automation_retry_forever:
+                    if evidence_id or evidence_error:
+                        self._log(
+                            task_id,
+                            getattr(exc, "stage", "automatic_reauthorization"),
+                            message,
+                            exc,
+                            level="ERROR" if account_disabled else "INFO",
+                            evidence_id=evidence_id,
+                            evidence_error=evidence_error,
+                        )
                     self._schedule_automatic_retry(task_id, account_id, message, classification)
                     return
                 if isinstance(exc, AutomaticBrowserError) and exc.retryable and attempt < self.settings.recovery_max_attempts:
@@ -1159,10 +1475,11 @@ class RecoveryCoordinator:
                 level="WARNING",
             )
             return
-        self._log(task_id, "mailbox_verification", "正在登录关联邮箱并核验 OpenAI 封号邮件。")
+        self._log(task_id, "mailbox_verification", "正在通过 IMAP 或 Outlook Web 核验 OpenAI 封号邮件。")
         since = datetime.now(timezone.utc) - timedelta(
             days=max(1, int(self.settings.mail_account_disabled_lookback_days))
         )
+        access_method = "IMAP"
         try:
             evidence = self.mailbox_verifier.find_account_disabled_message(
                 email_address,
@@ -1170,26 +1487,115 @@ class RecoveryCoordinator:
                 since=since,
             )
         except MailboxError as exc:
-            mailbox_status = "login_failed" if exc.code == "credentials_rejected" else None
-            if mailbox_status:
-                self.db.mark_mailbox_status(
-                    email_address,
-                    mailbox_status,
-                    error=exc.reason,
-                )
-            self._log(
-                task_id,
-                "mailbox_verification",
-                "邮箱登录或封号邮件核验失败，不改变账号停用结论。",
-                detail={
-                    "mailbox_checked": True,
-                    "login_succeeded": False,
-                    "mailbox_status": mailbox_status,
-                    "reason": safe_error(exc),
-                },
-                level="WARNING",
+            mailbox_status = (
+                "imap_rejected"
+                if exc.code in {"imap_login_rejected", "credentials_rejected"}
+                else None
             )
-            return
+            if mailbox_status and self.settings.outlook_webmail_enabled and _is_outlook_mailbox(email_address):
+                try:
+                    evidence = self.webmail_verifier.find_account_disabled_message(
+                        email_address,
+                        email_password,
+                        since=since,
+                    )
+                    access_method = "Outlook Web"
+                except MailboxError as web_exc:
+                    webmail_status = {
+                        "webmail_security_required": "webmail_verification_required",
+                        "webmail_human_verification_required": "webmail_verification_required",
+                        "webmail_security_email_not_configured": "webmail_verification_required",
+                        "webmail_security_code_rejected": "webmail_verification_required",
+                        "verification_mailbox_unavailable": "webmail_verification_required",
+                        "webmail_login_rejected": "webmail_rejected",
+                        "webmail_unavailable": "webmail_unavailable",
+                        "webmail_login_incomplete": "webmail_unavailable",
+                    }.get(web_exc.code, "webmail_unavailable")
+                    self.db.mark_mailbox_status(
+                        email_address,
+                        webmail_status,
+                        error=web_exc.reason,
+                    )
+                    evidence_id, evidence_error = self._save_mailbox_error_evidence(task_id, web_exc)
+                    message = (
+                        "Outlook 网页邮箱需要完成额外安全验证，暂未完成邮件核验。"
+                        if web_exc.code == "webmail_security_required"
+                        else "IMAP 和 Outlook Web 都未完成邮箱核验，不改变账号停用结论。"
+                    )
+                    detail = {
+                        "mailbox_checked": True,
+                        "imap_login_succeeded": False,
+                        "webmail_login_confirmed": False,
+                        "access_method": "Outlook Web",
+                        "mailbox_status": webmail_status,
+                        "reason": safe_error(web_exc),
+                    }
+                    if evidence_id:
+                        detail.update(
+                            {
+                                "evidence_id": evidence_id,
+                                "screenshot_kind": "mailbox_security",
+                                "screenshot_saved": True,
+                            }
+                        )
+                    elif evidence_error:
+                        detail.update(
+                            {
+                                "screenshot_saved": False,
+                                "screenshot_error": evidence_error,
+                            }
+                        )
+                    self._log(
+                        task_id,
+                        "mailbox_verification",
+                        message,
+                        detail=detail,
+                        level="WARNING",
+                    )
+                    return
+                except Exception as web_exc:
+                    self.db.mark_mailbox_status(
+                        email_address,
+                        "webmail_unavailable",
+                        error=safe_error(web_exc),
+                    )
+                    self._log(
+                        task_id,
+                        "mailbox_verification",
+                        "IMAP 和 Outlook Web 邮件核验发生异常，不改变账号停用结论。",
+                        detail={
+                            "mailbox_checked": True,
+                            "imap_login_succeeded": False,
+                            "webmail_login_confirmed": False,
+                            "access_method": "Outlook Web",
+                            "mailbox_status": "webmail_unavailable",
+                            "reason": safe_error(web_exc),
+                        },
+                        level="WARNING",
+                    )
+                    return
+            if access_method == "IMAP":
+                if mailbox_status:
+                    self.db.mark_mailbox_status(
+                        email_address,
+                        mailbox_status,
+                        error=exc.reason,
+                    )
+                self._log(
+                    task_id,
+                    "mailbox_verification",
+                    "IMAP 邮件读取或封号邮件核验失败，不改变账号停用结论。",
+                    detail={
+                        "mailbox_checked": True,
+                        "imap_login_succeeded": False,
+                        "webmail_login_confirmed": False,
+                        "access_method": access_method,
+                        "mailbox_status": mailbox_status,
+                        "reason": safe_error(exc),
+                    },
+                    level="WARNING",
+                )
+                return
         except Exception as exc:
             self._log(
                 task_id,
@@ -1205,7 +1611,13 @@ class RecoveryCoordinator:
                 task_id,
                 "mailbox_verification",
                 "邮箱中未找到近期 OpenAI 账号停用邮件。",
-                detail={"mailbox_checked": True, "message_found": False},
+                detail={
+                    "mailbox_checked": True,
+                    "message_found": False,
+                    "access_method": access_method,
+                    "imap_login_succeeded": access_method == "IMAP",
+                    "webmail_login_confirmed": access_method == "Outlook Web",
+                },
             )
             return
         evidence_id = None
@@ -1222,6 +1634,9 @@ class RecoveryCoordinator:
             "mailbox_provider": evidence.provider,
             "received_at": evidence.received_at.isoformat(timespec="seconds") if evidence.received_at else None,
             "screenshot_kind": "mailbox_message",
+            "access_method": access_method,
+            "imap_login_succeeded": access_method == "IMAP",
+            "webmail_login_confirmed": access_method == "Outlook Web",
         }
         if evidence_id:
             detail["evidence_id"] = evidence_id
@@ -1704,6 +2119,18 @@ class RecoveryCoordinator:
             detail=detail if isinstance(detail, dict) else None,
         )
 
+    def _save_mailbox_error_evidence(
+        self,
+        task_id: str,
+        error: MailboxError,
+    ) -> tuple[str | None, str | None]:
+        if error.evidence is None:
+            return None, error.evidence_error
+        try:
+            return self.db.save_task_evidence(task_id, error.evidence), None
+        except Exception as exc:
+            return None, safe_error(exc)
+
 
 def _account_test_technical_detail(result: AccountTestResult) -> dict[str, Any]:
     return {
@@ -1872,3 +2299,13 @@ def _expired(value: Any) -> bool:
         return parsed <= datetime.now(timezone.utc)
     except (TypeError, ValueError):
         return True
+
+
+def _is_outlook_mailbox(email_address: str) -> bool:
+    domain = str(email_address.rsplit("@", 1)[-1]).strip().lower()
+    return domain in {"outlook.com", "hotmail.com", "live.com", "msn.com"}
+
+
+def _verification_code_reader(settings: Settings) -> Netease163WebCodeReader | OutlookWebCodeReader:
+    email_address = settings.outlook_security_email.strip().lower()
+    return OutlookWebCodeReader(settings) if _is_outlook_mailbox(email_address) else Netease163WebCodeReader(settings)

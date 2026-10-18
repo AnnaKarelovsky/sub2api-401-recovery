@@ -72,6 +72,7 @@ DASHBOARD_SETTING_GROUPS: tuple[dict[str, Any], ...] = (
         "key": "mail",
         "label": "邮箱验证码",
         "fields": (
+            {"key": "outlook_security_email", "label": "微软备用验证邮箱", "type": "text"},
             {"key": "mail_imap_host", "label": "IMAP 地址", "type": "text"},
             {"key": "mail_imap_port", "label": "IMAP 端口", "type": "integer", "min": 1, "max": 65535},
             {"key": "mail_imap_folder", "label": "邮箱文件夹", "type": "text"},
@@ -207,6 +208,7 @@ class Settings(BaseSettings):
     mail_imap_host: str = "outlook.office365.com"
     mail_imap_port: int = 993
     mail_imap_folder: str = "INBOX"
+    outlook_security_email: str = ""
     mail_code_timeout_seconds: int = 150
     mail_poll_seconds: int = 5
     mail_account_disabled_lookback_days: int = 30
@@ -276,6 +278,12 @@ def coerce_dashboard_setting(key: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise ValueError(f"{key} must be text")
         normalized = value.strip()
+    if key == "outlook_security_email" and normalized:
+        normalized = normalized.lower()
+        domain = normalized.rsplit("@", 1)[-1]
+        supported_domains = {"163.com", "outlook.com", "hotmail.com", "live.com", "msn.com"}
+        if "@" not in normalized or domain not in supported_domains:
+            raise ValueError("outlook_security_email must be a 163 or Outlook mailbox")
 
     minimum = definition.get("min")
     maximum = definition.get("max")

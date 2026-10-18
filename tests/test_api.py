@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 import pytest
 
+from app.mailbox import MailboxError
 from app.main import create_app
 from app.version import APP_VERSION
 
@@ -214,6 +215,7 @@ def test_dashboard_settings_are_encrypted_and_reloadable(settings):
                     "sub2api_base_url": "http://sub2api.changed",
                     "sub2api_admin_key": "replacement-key",
                     "scan_interval_seconds": 30,
+                    "outlook_security_email": "recovery@163.com",
                 }
             },
         )
@@ -221,12 +223,104 @@ def test_dashboard_settings_are_encrypted_and_reloadable(settings):
         assert settings.sub2api_base_url == "http://sub2api.changed"
         assert settings.sub2api_admin_key == "replacement-key"
         assert settings.scan_interval_seconds == 30
+        assert settings.outlook_security_email == "recovery@163.com"
         assert b"replacement-key" not in open(settings.database_path, "rb").read()
 
         reset = client.delete("/api/v1/settings", headers=headers)
         assert reset.status_code == 200
         assert settings.sub2api_base_url == "http://sub2api.test"
         assert settings.sub2api_admin_key == "admin-key"
+
+
+def test_outlook_security_email_setting_accepts_supported_mailboxes_and_rejects_others(settings):
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        accepted = client.put(
+            "/api/v1/settings",
+            headers=headers,
+            json={"values": {"outlook_security_email": "recovery@outlook.com"}},
+        )
+        rejected = client.put(
+            "/api/v1/settings",
+            headers=headers,
+            json={"values": {"outlook_security_email": "recovery@example.com"}},
+        )
+
+        assert accepted.status_code == 200
+        assert settings.outlook_security_email == "recovery@outlook.com"
+        assert rejected.status_code == 422
+        assert "163 or Outlook" in rejected.json()["detail"]
+
+
+def test_pending_mailbox_verification_requires_dashboard_auth_and_163_setup(settings):
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/v1/mailboxes/verify-pending").status_code == 401
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = client.post("/api/v1/mailboxes/verify-pending", headers=headers)
+
+        assert response.status_code == 409
+        assert "备用验证邮箱" in response.json()["detail"]
+
+
+def test_pending_mailbox_verification_runs_as_a_confirmed_background_batch(settings):
+    settings.outlook_security_email = "recovery@163.com"
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_mailbox("recovery@163.com", "163-web-password")
+        target_id = runtime.db.upsert_mailbox("pending@outlook.com", "outlook-password")
+        other_id = runtime.db.upsert_mailbox("other@outlook.com", "other-password")
+        runtime.db.mark_mailbox_status("pending@outlook.com", "webmail_verification_required")
+        runtime.db.mark_mailbox_status("other@outlook.com", "webmail_verification_required")
+        runtime.coordinator.verification_code_reader.validate_access = lambda email, password: None
+
+        class WorkingVerifier:
+            def find_account_disabled_message(self, email, password, *, since):
+                assert email == "pending@outlook.com"
+                assert password == "outlook-password"
+                return None
+
+        runtime.coordinator.webmail_verifier = WorkingVerifier()
+        response = client.post(
+            "/api/v1/mailboxes/verify-pending",
+            headers=headers,
+            json={"mailbox_ids": [target_id]},
+        )
+
+        assert response.status_code == 202
+        assert response.json() == {"accepted": True, "count": 1}
+        assert runtime.db.get_mailbox(target_id)["status"] == "available"
+        assert runtime.db.get_mailbox(other_id)["status"] == "webmail_verification_required"
+
+
+def test_pending_mailbox_batch_marks_163_web_login_failure_without_changing_outlook_status(settings):
+    settings.outlook_security_email = "recovery@163.com"
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "password"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        runtime = client.app.state.runtime
+        runtime.db.upsert_mailbox("recovery@163.com", "163-web-password")
+        target_id = runtime.db.upsert_mailbox("pending@outlook.com", "outlook-password")
+        runtime.db.mark_mailbox_status("pending@outlook.com", "webmail_verification_required")
+
+        def reject_access(email, password):
+            raise MailboxError(
+                "IMAP rejected the mailbox login",
+                retryable=False,
+                code="163_login_rejected",
+            )
+
+        runtime.coordinator.verification_code_reader.validate_access = reject_access
+        response = client.post("/api/v1/mailboxes/verify-pending", headers=headers)
+
+        assert response.status_code == 202
+        assert response.json() == {"accepted": True, "count": 1}
+        source_mailbox = next(item for item in runtime.db.list_mailboxes() if item["email"] == "recovery@163.com")
+        assert source_mailbox["status"] == "webmail_rejected"
+        assert runtime.db.get_mailbox(target_id)["status"] == "webmail_verification_required"
 
 
 def test_account_materials_can_be_saved_partially_without_exposing_secrets(settings):

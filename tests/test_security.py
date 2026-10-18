@@ -51,6 +51,12 @@ def test_redaction_covers_oauth_code_and_state_in_text():
     assert "csrf-state" not in redacted
 
 
+def test_redaction_keeps_no_new_code_diagnostic_readable():
+    message = "The mailbox could not provide a security code: No new code arrived"
+
+    assert redact_text(message) == message
+
+
 def test_redaction_covers_bearer_and_url_credentials():
     redacted = redact_text("Authorization: Bearer live-token https://user:password@example.test/path")
     assert "live-token" not in redacted

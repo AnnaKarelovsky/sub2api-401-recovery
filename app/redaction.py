@@ -62,7 +62,8 @@ def redact_text(value: str) -> str:
 def _redact_patterns(text: str) -> str:
     key_pattern = (
         r"(?i)(access_token|refresh_token|id_token|password|cookie|secret|"
-        r"authorization_code|code_verifier|verification_code|otp|code|state)(\s*[:=]\s*)([^\s,;&]+)"
+        r"authorization_code|code_verifier|verification_code|otp|code|state)(\s*[:=]\s*)"
+        r"(?!no\b|none\b|not\b)([^\s,;&]+)"
     )
     text = re.sub(key_pattern, r"\1\2***", text)
     text = re.sub(r"(?i)(\bauthorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;&]+", r"\1***", text)

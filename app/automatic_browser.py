@@ -140,8 +140,12 @@ class AutomaticOAuthRunner:
                             callback_urls: list[str] = []
                             security_failures: list[str] = []
                             authorization_failures: list[str] = []
+                            region_failures: list[str] = []
+                            access_denied_failures: list[str] = []
+                            password_failures: list[tuple[str, bool]] = []
                             auth_responses: list[str] = []
                             mfa_denials: list[tuple[int, str]] = []
+                            account_disabled_responses: list[str] = []
 
                             def capture_callback(frame: Any) -> None:
                                 if frame == page.main_frame and self._is_callback(frame.url):
@@ -154,18 +158,42 @@ class AutomaticOAuthRunner:
                                     auth_responses.append(summary)
                                     del auth_responses[:-4]
                                 if parsed.path == "/api/accounts/mfa/verify" and response.status >= 400:
+                                    if self._response_indicates_account_disabled(response):
+                                        account_disabled_responses.append(
+                                            "OpenAI MFA response indicated account_deactivated"
+                                        )
                                     mfa_denials.append(
                                         (int(response.status), self._safe_auth_error_category(int(response.status)))
                                     )
+                                if parsed.path.rstrip("/") == "/api/accounts/password/verify" and response.status >= 400:
+                                    status = int(response.status)
+                                    password_failures.append(
+                                        (
+                                            f"OpenAI password verification was rejected (HTTP {status})",
+                                            status in {429, 500, 502, 503, 504},
+                                        )
+                                    )
+                                    return
                                 if parsed.path.rstrip("/") != "/api/accounts/authorize/continue" or response.status < 400:
                                     return
-                                message = f"OpenAI authorization endpoint returned HTTP {response.status}"
-                                if response.status in {403, 429}:
-                                    security_failures.append(
-                                        message
+                                try:
+                                    response_body = response.text()
+                                except Exception:
+                                    response_body = ""
+                                if self._is_region_error(response_body):
+                                    region_failures.append(
+                                        "OpenAI OAuth is unavailable from the current network region"
                                     )
+                                elif response.status == 403:
+                                    access_denied_failures.append(
+                                        "OpenAI OAuth authorization was denied (HTTP 403); complete the security verification in the interactive browser"
+                                    )
+                                elif response.status == 429:
+                                    security_failures.append("OpenAI authorization endpoint was rate-limited (HTTP 429)")
                                 else:
-                                    authorization_failures.append(message)
+                                    authorization_failures.append(
+                                        f"OpenAI authorization endpoint returned HTTP {response.status}"
+                                    )
 
                             page.on("framenavigated", capture_callback)
                             page.on("response", capture_security_response)
@@ -173,18 +201,30 @@ class AutomaticOAuthRunner:
                             page.goto(auth_url, wait_until="domcontentloaded", timeout=60_000)
                             self._notify(on_stage, "oauth_flow", "OpenAI authorization page loaded")
                             self._wait_through_challenge(page, on_stage=on_stage)
-                            self._complete_login(
-                                page,
-                                context,
-                                material,
-                                started_at,
-                                security_failures,
-                                on_stage=on_stage,
-                                auth_responses=auth_responses,
-                                mfa_denials=mfa_denials,
-                                authorization_failures=authorization_failures,
-                            )
-                            return self._wait_for_callback(page, callback_urls, on_stage=on_stage)
+                            try:
+                                self._complete_login(
+                                    page,
+                                    context,
+                                    material,
+                                    started_at,
+                                    security_failures,
+                                    on_stage=on_stage,
+                                    auth_responses=auth_responses,
+                                    mfa_denials=mfa_denials,
+                                    account_disabled_responses=account_disabled_responses,
+                                    authorization_failures=authorization_failures,
+                                    region_failures=region_failures,
+                                    access_denied_failures=access_denied_failures,
+                                    password_failures=password_failures,
+                                )
+                                return self._wait_for_callback(page, callback_urls, on_stage=on_stage)
+                            except AutomaticBrowserError as exc:
+                                if exc.evidence is None:
+                                    try:
+                                        exc.evidence = page.screenshot(type="png", animations="disabled")
+                                    except Exception as screenshot_error:
+                                        exc.evidence_error = safe_error(screenshot_error)
+                                raise
                         finally:
                             if browser_owned:
                                 self._cleanup_managed_browser(browser, browser_process, browser_data_dir)
@@ -204,7 +244,11 @@ class AutomaticOAuthRunner:
         on_stage: Callable[[str, str], None] | None = None,
         auth_responses: list[str] | None = None,
         mfa_denials: list[tuple[int, str]] | None = None,
+        account_disabled_responses: list[str] | None = None,
         authorization_failures: list[str] | None = None,
+        region_failures: list[str] | None = None,
+        access_denied_failures: list[str] | None = None,
+        password_failures: list[tuple[str, bool]] | None = None,
     ) -> None:
         email_submitted = False
         password_submitted = False
@@ -222,11 +266,27 @@ class AutomaticOAuthRunner:
         deadline = time.monotonic() + self.settings.playwright_timeout_seconds
         last_page_signature: tuple[str, str] | None = None
         last_page_changed_at = time.monotonic()
+        if region_failures is None:
+            region_failures = []
+        if access_denied_failures is None:
+            access_denied_failures = []
+        if account_disabled_responses is None:
+            account_disabled_responses = []
+        if password_failures is None:
+            password_failures = []
         while time.monotonic() < deadline:
             if self._is_callback(page.url):
                 return
             body = self._body_text(page).lower()
             if self._is_account_disabled(body):
+                raise self._account_disabled_error(page)
+            if self._is_region_error(body) or region_failures:
+                raise AutomaticBrowserError(
+                    "OpenAI OAuth is unavailable from the current network region",
+                    stage="region_blocked",
+                    retryable=False,
+                )
+            if account_disabled_responses:
                 raise self._account_disabled_error(page)
             if mfa_denials:
                 # Let an error-page navigation finish before classifying a generic MFA 403.
@@ -238,9 +298,22 @@ class AutomaticOAuthRunner:
                 status, category = mfa_denials[-1]
                 message, retryable = self._mfa_denial_reason(category, status=status)
                 raise AutomaticBrowserError(message, stage="totp", retryable=retryable)
+            if password_failures:
+                message, retryable = password_failures[-1]
+                raise AutomaticBrowserError(
+                    f"{message}; update the OpenAI password or account materials",
+                    stage="openai_password",
+                    retryable=retryable,
+                )
             if self._is_challenge(page):
                 self._wait_through_challenge(page, on_stage=on_stage)
                 continue
+            if access_denied_failures:
+                raise AutomaticBrowserError(
+                    access_denied_failures[-1],
+                    stage="security_challenge",
+                    retryable=False,
+                )
             if security_failures:
                 raise AutomaticBrowserError(
                     f"{security_failures[-1]} ({self._page_diagnostic(page, auth_responses=auth_responses)})",
@@ -801,6 +874,17 @@ class AutomaticOAuthRunner:
         )
 
     @staticmethod
+    def _is_region_error(body: str) -> bool:
+        return _contains_any(
+            body.lower(),
+            (
+                "unsupported_country_region_territory",
+                "country, region, or territory not supported",
+                "country region or territory not supported",
+            ),
+        )
+
+    @staticmethod
     def _is_account_disabled(body: str) -> bool:
         body = body.lower()
         return _contains_any(
@@ -1005,6 +1089,15 @@ class AutomaticOAuthRunner:
             return f"{method} {path} HTTP {response.status}{suffix}"
         except Exception:
             return None
+
+    @staticmethod
+    def _response_indicates_account_disabled(response: Any) -> bool:
+        """Classify a disabled account even when the browser page does not render the error."""
+        try:
+            body = response.text()
+        except Exception:
+            return False
+        return AutomaticOAuthRunner._is_account_disabled(str(body))
 
     @staticmethod
     def _safe_auth_error_category(status: int) -> str | None:

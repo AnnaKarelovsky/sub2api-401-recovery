@@ -278,6 +278,18 @@ class Database:
             conn.execute("ALTER TABLE mailbox_pool ADD COLUMN last_error TEXT")
         if "last_checked_at" not in columns:
             conn.execute("ALTER TABLE mailbox_pool ADD COLUMN last_checked_at TEXT")
+        conn.execute(
+            """
+            UPDATE mailbox_pool SET
+                status='imap_rejected',
+                last_error=CASE
+                    WHEN last_error='IMAP mailbox credentials were rejected'
+                    THEN 'IMAP login was rejected; webmail password validity is unconfirmed'
+                    ELSE last_error
+                END
+            WHERE status='login_failed'
+            """
+        )
         rows = conn.execute(
             """
             SELECT sub2api_account_id, email, email_password_encrypted
@@ -557,6 +569,24 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM recovery_tasks WHERE sub2api_account_id=? ORDER BY created_at DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def latest_account_disabled_task(self, account_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT t.* FROM recovery_tasks t
+                WHERE t.sub2api_account_id=? AND (
+                    t.stage='account_disabled'
+                    OR EXISTS (
+                        SELECT 1 FROM recovery_logs l
+                        WHERE l.task_id=t.id AND l.stage='account_disabled'
+                    )
+                )
+                ORDER BY t.created_at DESC LIMIT 1
+                """,
                 (account_id,),
             ).fetchone()
         return dict(row) if row else None

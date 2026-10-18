@@ -1,6 +1,6 @@
 const savedTheme = localStorage.getItem("recovery_theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = savedTheme;
-const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], mailboxes: [], mailboxSecrets: new Map(), editingMailboxId: "", reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, update: null, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
+const state = { token: localStorage.getItem("recovery_token") || "", accounts: [], tasks: [], mailboxes: [], mailboxSecrets: new Map(), mailboxVerificationStarting: false, selectedVerificationEmail: "", editingMailboxId: "", reauthSession: null, materialsAccountId: "", accountEnrollmentId: localStorage.getItem("recovery_account_enrollment") || "", accountEnrollmentTimer: null, profiles: [], activeProfileId: null, sync: { status: "never" }, update: null, lastUpdatedAt: null, busyActions: new Set(), selectedDisabledAccountIds: new Set(), accountSort: { key: "id", direction: "asc" }, selectedAccountId: "", selectedTask: null, recoveryPreviewSignature: "", activeView: localStorage.getItem("recovery_view") || "console" };
 const $ = (selector) => document.querySelector(selector);
 const DASHBOARD_REFRESH_MS = 10000;
 const TASK_DETAIL_REFRESH_MS = 2000;
@@ -13,7 +13,7 @@ const RECOVERY_FLOW = [
   { key: "credentials", label: "读取账号材料", stages: ["sync"] },
   { key: "native_refresh", label: "尝试原生刷新", stages: ["native_refresh"] },
   { key: "refresh_token", label: "刷新 OAuth 令牌", stages: ["refresh_token"] },
-  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "oauth_flow", "email", "openai_password", "email_code", "totp", "account_disabled"] },
+  { key: "browser", label: "执行 OAuth 浏览器流程", stages: ["browser", "automatic_reauthorization", "automation_blocked", "security_challenge", "cloudflare_challenge", "region_blocked", "oauth_flow", "email", "openai_password", "email_code", "totp", "account_disabled"] },
   { key: "callback", label: "接收回调并建立会话", stages: ["callback", "token_exchange", "reauthorization"] },
   { key: "identity_change", label: "处理账号身份变化", stages: ["identity_change", "account_replaced"] },
   { key: "apply", label: "写回原账号凭据", stages: ["apply_credentials"] },
@@ -280,6 +280,7 @@ const STAGE_LABELS = {
   browser: "启动浏览器",
   security_challenge: "安全挑战",
   cloudflare_challenge: "安全挑战",
+  region_blocked: "地区限制",
   email: "提交账号邮箱",
   openai_password: "提交 OpenAI 密码",
   email_code: "获取邮箱验证码",
@@ -404,6 +405,7 @@ function humanizeLogMessage(log) {
     "Security challenge cleared": "安全验证已完成，继续登录。",
     "OAuth security challenge did not clear before timeout": "安全验证未能在等待时间内完成。",
     "OAuth page requires a security challenge that automation cannot complete": "登录页出现当前自动流程无法完成的安全验证。",
+    "OpenAI OAuth is unavailable from the current network region": "当前网络出口所在地区不支持 OpenAI OAuth。",
     "OAuth session received and encrypted credentials stored": "已建立 OAuth 会话并加密保存凭据。",
     "OAuth authorization completed; queued credential application": "OAuth 授权已完成，凭据写回任务已排队。",
     "Account note does not contain complete automation credentials": "账号备注缺少自动登录所需信息，自动恢复已暂停。",
@@ -487,15 +489,17 @@ function renderTechnicalDetails(log) {
 function renderTaskEvidence(log, taskId) {
   const evidenceId = log.detail?.evidence_id;
   if (!evidenceId) return "";
-  const label = log.detail?.screenshot_kind === "mailbox_message" ? "查看封号邮件截图" : "查看页面截图";
+  const kind = log.detail?.screenshot_kind;
+  const label = kind === "mailbox_message" ? "查看封号邮件截图" : kind === "mailbox_security" ? "查看邮箱安全验证截图" : "查看页面截图";
   return `<div class="log-evidence"><button class="mini-button" type="button" data-task-evidence="${escapeHtml(taskId)}" data-evidence-id="${escapeHtml(evidenceId)}">${label}</button></div>`;
 }
 
 function renderInlineTaskEvidence(log, taskId) {
   const evidenceId = log.detail?.evidence_id;
   if (!evidenceId) return "";
-  const label = log.detail?.screenshot_kind === "mailbox_message" ? "正在加载封号邮件截图..." : "正在加载页面截图...";
-  const alt = log.detail?.screenshot_kind === "mailbox_message" ? "OpenAI 封号邮件核验截图" : "OpenAI 账号停用错误页面截图";
+  const kind = log.detail?.screenshot_kind;
+  const label = kind === "mailbox_message" ? "正在加载封号邮件截图..." : kind === "mailbox_security" ? "正在加载邮箱安全验证截图..." : "正在加载页面截图...";
+  const alt = kind === "mailbox_message" ? "OpenAI 封号邮件核验截图" : kind === "mailbox_security" ? "Outlook 邮箱安全验证截图" : "OpenAI 账号停用错误页面截图";
   return `<div class="log-evidence inline-log-evidence" data-inline-task-evidence="${escapeHtml(taskId)}" data-evidence-id="${escapeHtml(evidenceId)}"><span class="evidence-loading">${label}</span><img hidden alt="${alt}" /></div>`;
 }
 
@@ -688,16 +692,34 @@ function accountName(account) {
   return account.email || account.username || "未命名账号";
 }
 
-function accountPriority(account) {
-  const priority = { account_disabled: 0, account_error: 1, auth_failed: 2, reauth_required: 3, automation_blocked: 4, recovering: 5, retry_wait: 6, account_replaced: 7, rate_limited: 8, observed: 9, healthy: 10, unknown: 99 };
+function isRateLimitedAccount(account) {
+  const reason = String(account.failure_reason || "").toLowerCase();
+  if (account.status === "rate_limited" || account.failure_class === "429_RATE_LIMIT") return true;
+  if (["account_disabled", "account_replaced", "auth_failed", "reauth_required"].includes(account.status)) return false;
+  return /\b429\b|rate[ _-]*limit|usage[ _-]*limit|too many requests|overloaded/.test(reason);
+}
+
+function accountGroupForUi(account) {
+  if (isRateLimitedAccount(account)) return "normal";
   const status = accountStatusForUi(account);
-  if (status === "healthy" && isConsoleAttentionAccount(account)) return 4;
-  return priority[status] ?? 99;
+  if (status === "recovering" || status === "retry_wait") return "processing";
+  if (status === "healthy") return account.automation_materials_checked && account.automation_ready ? "normal" : "attention";
+  if (status === "account_replaced") return "normal";
+  return "attention";
+}
+
+function accountSecondaryText(account) {
+  return isRateLimitedAccount(account) ? (account.plan_type || "OpenAI OAuth") : (account.failure_reason || account.plan_type || "OpenAI OAuth");
+}
+
+function accountPriority(account) {
+  const groupPriority = { attention: 0, processing: 1, normal: 2 };
+  const status = accountStatusForUi(account);
+  return (groupPriority[accountGroupForUi(account)] ?? 99) * 100 + (ACCOUNT_STATUS_ORDER[status] ?? 99);
 }
 
 function isConsoleAttentionAccount(account) {
-  if (accountStatusForUi(account) !== "healthy") return true;
-  return !account.automation_materials_checked || !account.automation_ready;
+  return accountGroupForUi(account) === "attention";
 }
 
 function ensureSelectedAccount() {
@@ -714,11 +736,12 @@ function latestTaskForAccount(accountId) {
 
 function accountStatusForUi(account) {
   const task = latestTaskForAccount(account.sub2api_account_id);
-  return task?.status === "queued" && task.stage === "retry_wait" ? "retry_wait" : account.status;
+  if (task?.status === "queued" && task.stage === "retry_wait") return "retry_wait";
+  return isRateLimitedAccount(account) ? "healthy" : account.status;
 }
 
 function isVisibleAccount(account) {
-  return accountStatusForUi(account) !== "rate_limited";
+  return true;
 }
 
 function isDeletionEligible(account) {
@@ -741,11 +764,12 @@ function updateDisabledAccountSelectionControls(visibleEligible = []) {
 function renderConsoleAccounts() {
   const search = $("#console-account-search").value.trim().toLowerCase();
   const filter = $("#console-account-filter").value;
+  const groupLabels = { attention: "需要处理", processing: "处理中", normal: "正常账号", "": "全部账号" };
+  $("#console-account-heading").textContent = groupLabels[filter] || "账号";
   const visibleAccounts = state.accounts.filter(isVisibleAccount);
   const items = visibleAccounts
     .filter((account) => {
-      if (filter === "attention" && !isConsoleAttentionAccount(account)) return false;
-      if (filter && filter !== "attention" && accountStatusForUi(account) !== filter) return false;
+      if (filter && accountGroupForUi(account) !== filter) return false;
       if (!search) return true;
       return [account.email, account.username, account.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
     })
@@ -759,8 +783,8 @@ function renderConsoleAccounts() {
     const selected = accountId === String(state.selectedAccountId);
     const task = latestTaskForAccount(accountId);
     const retryWaiting = accountStatusForUi(account) === "retry_wait";
-    const secondary = account.failure_reason || account.plan_type || "OpenAI OAuth";
-    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><span class="console-account-side-top"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}</span><span class="console-account-side-bottom">${materialStatus(account)}${stateBadge(retryWaiting ? "retry_wait" : account.status)}${retryWaiting ? `<small class="console-account-retry-at">预计 ${escapeHtml(formatCompactDate(task.available_at))}</small>` : ""}</span></span></button>`;
+    const secondary = accountSecondaryText(account);
+    return `<button class="console-account ${selected ? "selected" : ""}" type="button" data-select-account="${escapeHtml(accountId)}" aria-pressed="${selected}"><span class="console-account-copy"><strong>${escapeHtml(accountName(account))}</strong><span>${escapeHtml(secondary)}</span></span><span class="console-account-side"><span class="console-account-side-top"><code>#${escapeHtml(accountId)}</code>${task ? `<small>${escapeHtml(stageLabel(task.stage))}</small>` : ""}</span><span class="console-account-side-bottom">${materialStatus(account)}${stateBadge(retryWaiting ? "retry_wait" : accountStatusForUi(account))}${retryWaiting ? `<small class="console-account-retry-at">预计 ${escapeHtml(formatCompactDate(task.available_at))}</small>` : ""}</span></span></button>`;
   }).join("");
   list.scrollTop = scrollTop;
 }
@@ -865,18 +889,18 @@ function renderRecoveryInspector() {
   $("#recovery-account-name").textContent = accountName(account);
   $("#recovery-account-meta").textContent = `Sub2API ID ${account.sub2api_account_id} · ${account.plan_type || "OpenAI OAuth"}`;
   $("#recovery-account-material").innerHTML = materialStatus(account);
-  $("#recovery-account-state").innerHTML = stateBadge(account.status);
+  $("#recovery-account-state").innerHTML = stateBadge(accountStatusForUi(account));
   const accountDisabled = account.status === "account_disabled" || task?.stage === "account_disabled";
   const accountReplaced = account.status === "account_replaced" || task?.stage === "account_replaced";
   const automationBlocked = account.status === "automation_blocked" || task?.stage === "automation_blocked";
   const waitingAuthorization = account.status === "reauth_required" || task?.status === "manual_required" || task?.stage === "reauthorization";
-  const rateLimited = account.status === "rate_limited";
+  const rateLimited = isRateLimitedAccount(account);
   const standardActions = rateLimited
     ? `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("test", account.sub2api_account_id, "检查状态")}`
     : `${actionButton("materials", account.sub2api_account_id, "编辑材料")}${actionButton("recover", account.sub2api_account_id, accountDisabled ? "手动重试" : (automationBlocked ? "重新尝试" : "开始恢复"))}${actionButton("test", account.sub2api_account_id, "检查状态")}${waitingAuthorization ? actionButton("reauth", account.sub2api_account_id, "重新授权") : ""}`;
   $("#recovery-actions").innerHTML = `${accountReplaced ? "" : standardActions}${task ? actionButton("detail", task.id, "查看完整日志") : ""}`;
   const retryWaiting = task?.status === "queued" && task.stage === "retry_wait";
-  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (rateLimited ? "上游使用额度已达到限制，等待额度恢复" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (retryWaiting ? "等待重试" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务"))))));
+  $("#recovery-status-text").textContent = accountDisabled ? "OpenAI 账号已删除或停用" : (accountReplaced ? "身份已变化，已创建新账号" : (automationBlocked ? "自动恢复已阻止" : (waitingAuthorization ? "等待重新授权" : (retryWaiting ? "等待重试" : (task ? (task.status === "manual_required" ? "等待授权" : statusLabel(task.status)) : "暂无恢复任务")))));
   $("#recovery-live-text").textContent = retryWaiting ? `预计 ${formatDate(task.available_at)} 重试` : (task && !TERMINAL_TASK_STATUSES.has(task.status) ? "自动更新中 · 每 2 秒" : (task?.error_reason ? taskErrorSummary(task) : ""));
   const alert = $("#recovery-alert");
   if (accountDisabled) {
@@ -992,7 +1016,7 @@ function renderAccounts() {
   const filter = $("#account-filter").value;
   const search = $("#account-search").value.trim().toLowerCase();
   const items = state.accounts.filter(isVisibleAccount).filter((item) => {
-    if (filter && accountStatusForUi(item) !== filter) return false;
+    if (filter && accountGroupForUi(item) !== filter) return false;
     if (!search) return true;
     return [item.email, item.username, item.sub2api_account_id].some((value) => String(value ?? "").toLowerCase().includes(search));
   }).sort((left, right) => compareAccountValues(left, right, state.accountSort.key, state.accountSort.direction) || compareAccountValues(left, right, "id"));
@@ -1014,16 +1038,16 @@ function renderAccounts() {
     const accountId = String(account.sub2api_account_id);
     const latestTask = latestTaskForAccount(accountId);
     const needsScreenshotReview = account.status === "account_disabled" && latestTask?.stage === "account_disabled" && !latestTask.has_disabled_page_evidence;
-    const recoveryAction = account.status === "rate_limited" ? "" : actionButton("recover", account.sub2api_account_id, needsScreenshotReview ? "重新核验" : "恢复");
+    const recoveryAction = isRateLimitedAccount(account) ? "" : actionButton("recover", account.sub2api_account_id, needsScreenshotReview ? "重新核验" : "恢复");
     return `<tr>
     <td class="selection-column">${eligible ? `<input type="checkbox" data-delete-disabled-account="${escapeHtml(accountId)}" aria-label="选择已确认停用账号 ${escapeHtml(accountId)}" ${state.selectedDisabledAccountIds.has(accountId) ? "checked" : ""} />` : ""}</td>
-    <td><div class="account-name">${escapeHtml(account.email || account.username || "未命名账号")}</div><div class="account-sub">${escapeHtml(account.failure_reason || account.plan_type || "OpenAI OAuth")}</div></td>
+    <td><div class="account-name">${escapeHtml(account.email || account.username || "未命名账号")}</div><div class="account-sub">${escapeHtml(accountSecondaryText(account))}</div></td>
     <td><code>${escapeHtml(account.sub2api_account_id)}</code></td>
     <td>${stateBadge(accountStatusForUi(account))}${needsScreenshotReview ? '<div class="account-sub evidence-needed">需重新核验截图</div>' : ""}</td>
     <td>${materialStatus(account)}</td>
     <td><span class="account-sub">${account.has_access_token ? "AT" : "-"} / ${account.has_refresh_token ? "RT" : "-"}</span></td>
     <td>${escapeHtml(formatDate(account.last_401_at))}</td>
-    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${recoveryAction}${account.status === "rate_limited" ? "" : actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}${latestTask?.stage === "account_disabled" ? actionButton("detail", latestTask.id, "诊断日志") : ""}</div></td>
+    <td><div class="row-actions">${actionButton("materials", account.sub2api_account_id, "材料")}${recoveryAction}${isRateLimitedAccount(account) ? "" : actionButton("reauth", account.sub2api_account_id, "重新授权")}${actionButton("test", account.sub2api_account_id, "检查状态")}${latestTask?.stage === "account_disabled" ? actionButton("detail", latestTask.id, "诊断日志") : ""}</div></td>
   </tr>`;
   }).join("");
   updateDisabledAccountSelectionControls(visibleEligible);
@@ -1052,9 +1076,40 @@ function renderMailboxes() {
     const id = String(mailbox.id);
     const secret = state.mailboxSecrets.get(id);
     const hasPassword = Boolean(mailbox.has_password);
-    const loginFailed = mailbox.status === "login_failed";
-    const status = loginFailed ? "无法登录" : (hasPassword ? "可用" : "待补密码");
-    const statusClass = loginFailed ? "failed" : (hasPassword ? "ready" : "missing");
+    const imapRejected = ["imap_rejected", "login_failed"].includes(mailbox.status);
+    const webmailVerificationRequired = mailbox.status === "webmail_verification_required";
+    const webmailVerificationInProgress = mailbox.status === "webmail_verification_in_progress";
+    const webmailRejected = mailbox.status === "webmail_rejected";
+    const webmailUnavailable = mailbox.status === "webmail_unavailable";
+    const isReadable = mailbox.status === "available";
+    const statusLabels = {
+      imap_rejected: "IMAP受限",
+      login_failed: "IMAP受限",
+      webmail_verification_required: "需网页验证",
+      webmail_verification_in_progress: "验证中",
+      webmail_rejected: "网页拒绝",
+      webmail_unavailable: "网页不可用",
+      available: "邮件可读",
+    };
+    const statusTitles = {
+      imap_rejected: "IMAP 登录未通过，不代表网页邮箱密码错误；邮箱可能要求额外安全验证或限制 IMAP 访问。",
+      login_failed: "IMAP 登录未通过，不代表网页邮箱密码错误；邮箱可能要求额外安全验证或限制 IMAP 访问。",
+      webmail_verification_required: "网页邮箱登录需要完成微软安全验证；完成验证后才能继续读取邮件。",
+      webmail_verification_in_progress: "正在使用配置的备用邮箱完成微软安全验证。",
+      webmail_rejected: "网页邮箱拒绝了登录。",
+      webmail_unavailable: "网页邮箱读取未完成。",
+      available: "已通过 IMAP 或网页邮箱读取验证",
+    };
+    const status = !hasPassword ? "待补密码" : (statusLabels[mailbox.status] || "未验证");
+    const statusClass = !hasPassword
+      ? "missing"
+      : (imapRejected || webmailVerificationRequired || webmailVerificationInProgress || webmailUnavailable
+        ? "warning"
+        : (webmailRejected ? "failed" : (isReadable ? "ready" : "unverified")));
+    const statusTitle = !hasPassword
+      ? "请保存邮箱密码"
+      : (statusTitles[mailbox.status]
+        || "密码已保存，尚未通过邮件读取验证");
     const passwordValue = secret
       ? `<button class="mailbox-password-value" type="button" data-mailbox-action="copy" data-id="${escapeHtml(id)}" title="点击复制密码">${escapeHtml(secret.password || "（空密码）")}</button>`
       : `<code>••••••••••</code>`;
@@ -1065,11 +1120,118 @@ function renderMailboxes() {
       <td><div class="account-name">${escapeHtml(mailbox.email)}</div></td>
       <td><div class="mailbox-password">${hasPassword ? passwordValue : "<code>未保存</code>"}${passwordAction}</div></td>
       <td><span class="account-sub">${escapeHtml(mailboxSourceLabel(mailbox))}</span></td>
-      <td><span class="mailbox-state ${statusClass}">${status}</span></td>
+      <td><span class="mailbox-state ${statusClass}" title="${escapeHtml(statusTitle)}">${status}</span></td>
       <td>${escapeHtml(formatDate(mailbox.updated_at))}</td>
-      <td><div class="row-actions"><button class="mini-button" type="button" data-mailbox-action="edit" data-id="${escapeHtml(id)}">编辑</button><button class="mini-button danger-text" type="button" data-mailbox-action="delete" data-id="${escapeHtml(id)}">删除</button></div></td>
+      <td><div class="row-actions">${webmailVerificationRequired && hasPassword ? `<button class="mini-button" type="button" data-mailbox-action="verify" data-id="${escapeHtml(id)}">核验</button>` : ""}<button class="mini-button" type="button" data-mailbox-action="edit" data-id="${escapeHtml(id)}">编辑</button><button class="mini-button danger-text" type="button" data-mailbox-action="delete" data-id="${escapeHtml(id)}">删除</button></div></td>
     </tr>`;
   }).join("");
+  const pendingCount = state.mailboxes.filter((mailbox) =>
+    ["webmail_verification_required", "webmail_verification_in_progress"].includes(mailbox.status)
+    && /(^|\.)(outlook|hotmail|live|msn)\.com$/i.test(String(mailbox.email || "").split("@").pop() || "")
+    && Boolean(mailbox.has_password)
+  ).length;
+  const verificationButton = $("#verify-mailboxes-button");
+  const verificationMailboxSelect = $("#verification-mailbox-select");
+  const selectedVerificationEmail = state.selectedVerificationEmail;
+  const verificationMailboxes = state.mailboxes.filter((mailbox) =>
+    mailbox.status === "available"
+    && Boolean(mailbox.has_password)
+    && (String(mailbox.email || "").toLowerCase().endsWith("@163.com")
+      || /(^|\.)(outlook|hotmail|live|msn)\.com$/i.test(String(mailbox.email || "").split("@").pop() || ""))
+  );
+  verificationMailboxSelect.innerHTML = [
+    '<option value="">使用运行配置邮箱</option>',
+    ...verificationMailboxes.map((mailbox) =>
+      `<option value="${escapeHtml(mailbox.email)}">${escapeHtml(mailbox.email)}</option>`
+    ),
+  ].join("");
+  if (verificationMailboxes.some((mailbox) => mailbox.email === selectedVerificationEmail)) {
+    verificationMailboxSelect.value = selectedVerificationEmail;
+  } else {
+    state.selectedVerificationEmail = "";
+    verificationMailboxSelect.value = "";
+  }
+  verificationButton.textContent = pendingCount ? `验证需处理邮箱（${pendingCount}）` : "验证需处理邮箱";
+  verificationButton.disabled = pendingCount === 0 || state.mailboxVerificationStarting;
+}
+
+async function verifyMailbox(mailboxId) {
+  const mailbox = state.mailboxes.find((item) => String(item.id) === String(mailboxId));
+  if (!mailbox || mailbox.status !== "webmail_verification_required" || !mailbox.has_password) return;
+  const verificationEmail = state.selectedVerificationEmail;
+  const receiverLabel = verificationEmail || "运行配置中的备用邮箱";
+  if (!window.confirm(`只核验 ${mailbox.email}，并在微软页面提交 ${receiverLabel} 作为备用邮箱。继续吗？`)) return;
+  state.mailboxVerificationStarting = true;
+  renderMailboxes();
+  try {
+    const result = await api("/api/v1/mailboxes/verify-pending", {
+      method: "POST",
+      body: JSON.stringify({
+        mailbox_ids: [String(mailboxId)],
+        ...(verificationEmail ? { verification_email: verificationEmail } : {}),
+      }),
+    });
+    if (!result.count) {
+      alert("该邮箱当前不在待核验状态。");
+      return;
+    }
+    await loadAll();
+    alert(`已开始核验 ${mailbox.email}；结果会记录在关联账号日志中。`);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    state.mailboxVerificationStarting = false;
+    renderMailboxes();
+  }
+}
+
+async function verifyPendingMailboxes() {
+  const pendingCount = state.mailboxes.filter((mailbox) =>
+    ["webmail_verification_required", "webmail_verification_in_progress"].includes(mailbox.status)
+    && Boolean(mailbox.has_password)
+  ).length;
+  if (!pendingCount) return;
+  let verificationEmail = state.selectedVerificationEmail;
+  let settingsData;
+  if (!verificationEmail) {
+    try {
+      settingsData = await api("/api/v1/settings");
+      verificationEmail = (settingsData.groups || [])
+        .flatMap((group) => group.fields || [])
+        .find((field) => field.key === "outlook_security_email")?.value || "";
+    } catch (error) {
+      alert(error.message);
+      return;
+    }
+  }
+  if (!verificationEmail) {
+    alert("请先在运行配置中填写微软备用验证邮箱。");
+    renderSettings(settingsData);
+    showView("settings");
+    return;
+  }
+  if (!window.confirm(`将依次登录 ${pendingCount} 个 Outlook 邮箱，并添加 ${verificationEmail} 作为微软备用验证邮箱。遇到人机验证时会停止该邮箱。继续吗？`)) return;
+  state.mailboxVerificationStarting = true;
+  renderMailboxes();
+  try {
+    const result = await api("/api/v1/mailboxes/verify-pending", {
+      method: "POST",
+      ...(state.selectedVerificationEmail
+        ? { body: JSON.stringify({ verification_email: state.selectedVerificationEmail }) }
+        : {}),
+    });
+    if (!result.count) {
+      alert("当前没有待处理的 Outlook 邮箱。");
+      return;
+    }
+    await loadAll();
+    alert(`已开始顺序处理 ${result.count} 个邮箱；处理结果会更新在邮箱池状态中。`);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    state.mailboxVerificationStarting = false;
+    renderMailboxes();
+  }
 }
 
 function openMailboxDialog(mailboxId = "") {
@@ -1120,6 +1282,8 @@ async function handleMailboxAction(action, mailboxId) {
       $("#service-status").textContent = "密码已复制";
     } else if (action === "edit") {
       openMailboxDialog(mailboxId);
+    } else if (action === "verify") {
+      await verifyMailbox(mailboxId);
     } else if (action === "delete") {
       if (!window.confirm(`删除邮箱 ${mailbox.email}？此操作不会影响 Sub2API 账号。`)) return;
       await api(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}`, { method: "DELETE" });
@@ -1448,14 +1612,18 @@ $("#refresh-button").addEventListener("click", async () => {
   const button = $("#refresh-button");
   const label = button.querySelector(".console-action-label");
   button.disabled = true;
-  if (label) label.textContent = "更新中...";
-  else button.textContent = "更新中...";
+  if (label) label.textContent = "读取中...";
+  else button.textContent = "读取中...";
   try { await loadAll(); } catch (error) { alert(error.message); }
-  finally { button.disabled = false; if (label) label.textContent = "刷新"; else button.textContent = "刷新"; }
+  finally { button.disabled = false; if (label) label.textContent = "刷新数据"; else button.textContent = "刷新数据"; }
 });
 $("#close-settings").addEventListener("click", () => showView("console"));
 $("#mailbox-search").addEventListener("input", renderMailboxes);
+$("#verification-mailbox-select").addEventListener("change", (event) => {
+  state.selectedVerificationEmail = event.target.value;
+});
 $("#new-mailbox-button").addEventListener("click", () => openMailboxDialog());
+$("#verify-mailboxes-button").addEventListener("click", verifyPendingMailboxes);
 $("#cancel-mailbox").addEventListener("click", () => $("#mailbox-dialog").close("cancel"));
 $("#close-mailbox-icon").addEventListener("click", () => $("#mailbox-dialog").close("cancel"));
 $("#mailbox-form").addEventListener("submit", async (event) => {
@@ -1549,16 +1717,16 @@ $("#scan-button").addEventListener("click", async () => {
   else button.textContent = "扫描中...";
   try {
     await api("/api/v1/scan", { method: "POST" });
-    $("#service-status").textContent = "扫描已排队";
+    $("#service-status").textContent = "账号扫描已排队";
     await loadAll();
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline && ["queued", "running"].includes(state.sync.status)) {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       await loadAll();
     }
-    $("#service-status").textContent = state.sync.status === "failed" ? "扫描失败" : (state.sync.status === "success" ? "扫描完成" : (state.sync.status === "busy" ? "已有扫描进行中" : "扫描仍在后台运行"));
+    $("#service-status").textContent = state.sync.status === "failed" ? "账号扫描失败" : (state.sync.status === "success" ? "账号扫描完成" : (state.sync.status === "busy" ? "已有账号扫描进行中" : "账号扫描仍在后台运行"));
   } catch (error) { alert(error.message); }
-  finally { button.disabled = false; if (label) label.textContent = "立即扫描"; else button.textContent = "立即扫描"; }
+  finally { button.disabled = false; if (label) label.textContent = "扫描账号"; else button.textContent = "扫描账号"; }
 });
 $("#console-account-search").addEventListener("input", renderConsole);
 $("#console-account-filter").addEventListener("change", renderConsole);

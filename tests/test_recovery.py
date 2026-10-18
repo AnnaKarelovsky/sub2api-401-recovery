@@ -659,6 +659,7 @@ def test_account_disabled_detection_verifies_mailbox_and_saves_mail_evidence(dat
 
 
 def test_mailbox_login_failure_is_saved_without_changing_disabled_classification(database, settings):
+    settings.outlook_webmail_enabled = False
     database.upsert_account_snapshot(
         {"sub2api_account_id": 15, "email": "unavailable@outlook.com", "status": "auth_failed"}
     )
@@ -672,9 +673,9 @@ def test_mailbox_login_failure_is_saved_without_changing_disabled_classification
     class RejectingMailboxVerifier:
         def find_account_disabled_message(self, email, password, *, since):
             raise MailboxError(
-                "IMAP mailbox credentials were rejected",
+                "IMAP rejected the mailbox login; this does not confirm that webmail credentials are invalid",
                 retryable=False,
-                code="credentials_rejected",
+                code="imap_login_rejected",
             )
 
     coordinator.mailbox_verifier = RejectingMailboxVerifier()
@@ -684,9 +685,267 @@ def test_mailbox_login_failure_is_saved_without_changing_disabled_classification
     )
 
     mailbox = database.list_mailboxes()[0]
-    assert mailbox["status"] == "login_failed"
-    assert mailbox["last_error"] == "IMAP mailbox credentials were rejected"
+    assert mailbox["status"] == "imap_rejected"
+    assert "does not confirm" in mailbox["last_error"]
     assert database.get_mapping(15)["status"] == "auth_failed"
+    log = database.list_logs(task_id)[-1]
+    assert log["detail"]["access_method"] == "IMAP"
+    assert log["detail"]["webmail_login_confirmed"] is False
+    assert "IMAP 邮件读取" in log["message"]
+
+
+def test_mailbox_imap_rejection_falls_back_to_outlook_web(database, settings):
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 16, "email": "fallback@outlook.com", "status": "auth_failed"}
+    )
+    database.save_credentials(
+        16,
+        {"email": "fallback@outlook.com", "email_password": "mail-secret"},
+    )
+    task_id, _ = database.create_task(16, trigger="test")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+
+    class RejectingImapVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            raise MailboxError(
+                "IMAP rejected the mailbox login",
+                retryable=False,
+                code="imap_login_rejected",
+            )
+
+    class WorkingOutlookVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            return None
+
+    coordinator.mailbox_verifier = RejectingImapVerifier()
+    coordinator.webmail_verifier = WorkingOutlookVerifier()
+    coordinator._verify_disabled_account_mailbox(
+        task_id,
+        NoteCredentials(email="fallback@outlook.com", email_password="mail-secret"),
+    )
+
+    mailbox = database.list_mailboxes()[0]
+    assert mailbox["status"] == "available"
+    log = database.list_logs(task_id)[-1]
+    assert log["detail"]["access_method"] == "Outlook Web"
+    assert log["detail"]["webmail_login_confirmed"] is True
+
+
+def test_pending_outlook_mailbox_verification_uses_configured_163_mailbox(database, settings):
+    settings.outlook_security_email = "recovery@163.com"
+    database.upsert_mailbox("recovery@163.com", "163-web-password")
+    mailbox_id = database.upsert_mailbox("pending@outlook.com", "outlook-password")
+    database.mark_mailbox_status("pending@outlook.com", "webmail_verification_required")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+
+    class WorkingVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            assert email == "pending@outlook.com"
+            assert password == "outlook-password"
+            return None
+
+    coordinator.verification_code_reader.validate_access = lambda email, password: None
+    coordinator.webmail_verifier = WorkingVerifier()
+    pending = coordinator.reserve_pending_mailbox_verifications()
+    assert pending == [mailbox_id]
+    coordinator.process_mailbox_verification_batch(pending)
+
+    mailbox = database.get_mailbox(mailbox_id)
+    assert mailbox["status"] == "available"
+    assert mailbox["last_error"] is None
+
+
+def test_pending_mailbox_batch_saves_disabled_email_evidence_to_source_account_task(database, settings):
+    settings.outlook_security_email = "recovery@163.com"
+    database.upsert_mailbox("recovery@163.com", "163-web-password")
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 81, "email": "deleted@outlook.com", "status": "account_disabled"}
+    )
+    task_id, _ = database.create_task(81, trigger="test")
+    database.finish_task(
+        task_id,
+        status="failed",
+        failure_class="ACCOUNT_ERROR",
+        error_reason="account_deactivated",
+        stage="account_disabled",
+    )
+    mailbox_id = database.upsert_mailbox(
+        "deleted@outlook.com",
+        "outlook-password",
+        source_account_id=81,
+    )
+    database.mark_mailbox_status("deleted@outlook.com", "webmail_verification_required")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+    coordinator.verification_code_reader.validate_access = lambda email, password: None
+
+    class MailFoundVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            assert email == "deleted@outlook.com"
+            assert password == "outlook-password"
+            return MailboxEvidence(
+                provider="outlook.office365.com",
+                subject="Your OpenAI account has been deactivated",
+                received_at=None,
+                excerpt="Your OpenAI account has been deactivated.",
+                screenshot=b"\x89PNG\r\n\x1a\nmailbox-notice",
+            )
+
+    coordinator.webmail_verifier = MailFoundVerifier()
+
+    pending = coordinator.reserve_pending_mailbox_verifications()
+    assert pending == [mailbox_id]
+    coordinator.process_mailbox_verification_batch(pending)
+
+    mailbox_log = next(
+        log
+        for log in database.list_logs(task_id)
+        if log["stage"] == "mailbox_verification" and log.get("detail", {}).get("message_found")
+    )
+    evidence_id = mailbox_log["detail"]["evidence_id"]
+    assert mailbox_log["detail"]["screenshot_saved"] is True
+    assert database.get_task_evidence(task_id, evidence_id)["image"] == b"\x89PNG\r\n\x1a\nmailbox-notice"
+    assert database.get_task(task_id)["stage"] == "account_disabled"
+    assert database.get_task(task_id)["status"] == "failed"
+    assert database.get_mapping(81)["status"] == "account_disabled"
+    assert database.get_mailbox(mailbox_id)["status"] == "available"
+
+
+def test_targeted_mailbox_verification_can_use_alternate_pool_receiver(database, settings, monkeypatch):
+    settings.outlook_security_email = "recovery@163.com"
+    database.upsert_mailbox("recovery@163.com", "163-web-password")
+    database.upsert_mailbox("alternate@outlook.com", "alternate-password")
+    database.mark_mailbox_status("alternate@outlook.com", "available")
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 82, "email": "target@outlook.com", "status": "account_disabled"}
+    )
+    task_id, _ = database.create_task(82, trigger="test")
+    database.finish_task(
+        task_id,
+        status="failed",
+        failure_class="ACCOUNT_ERROR",
+        error_reason="account_deactivated",
+        stage="account_disabled",
+    )
+    mailbox_id = database.upsert_mailbox("target@outlook.com", "target-password", source_account_id=82)
+    database.mark_mailbox_status("target@outlook.com", "webmail_verification_required")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+    searched = []
+
+    class FakeCodeReader:
+        def close_session(self):
+            return None
+
+    class FakeVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            searched.append(email)
+            if email == "target@outlook.com":
+                return MailboxEvidence(
+                    provider="outlook.live.com",
+                    subject="OpenAI account deactivated",
+                    received_at=None,
+                    excerpt="OpenAI account deactivated",
+                    screenshot=b"\x89PNG\r\n\x1a\nmail-notice",
+                )
+            return None
+
+    monkeypatch.setattr("app.recovery._verification_code_reader", lambda settings: FakeCodeReader())
+    monkeypatch.setattr(
+        "app.recovery.OutlookWebAccountDisabledReader",
+        lambda settings, *, mailbox_lookup, code_reader: FakeVerifier(),
+    )
+
+    pending = coordinator.reserve_pending_mailbox_verifications(
+        [mailbox_id],
+        verification_email="alternate@outlook.com",
+    )
+    coordinator.process_mailbox_verification_batch(pending, "alternate@outlook.com")
+
+    assert searched == ["alternate@outlook.com", "target@outlook.com"]
+    assert settings.outlook_security_email == "recovery@163.com"
+    assert database.get_mailbox(mailbox_id)["status"] == "available"
+    log = next(
+        item
+        for item in database.list_logs(task_id)
+        if item["stage"] == "mailbox_verification" and item.get("detail", {}).get("message_found")
+    )
+    assert database.get_task_evidence(task_id, log["detail"]["evidence_id"])["image"] == b"\x89PNG\r\n\x1a\nmail-notice"
+
+
+def test_pending_mailbox_batch_attaches_to_latest_task_when_no_disabled_stage(database, settings):
+    settings.outlook_security_email = "recovery@163.com"
+    database.upsert_mailbox("recovery@163.com", "163-web-password")
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 83, "email": "totp-failed@outlook.com", "status": "automation_blocked"}
+    )
+    task_id, _ = database.create_task(83, trigger="test")
+    database.finish_task(
+        task_id,
+        status="failed",
+        failure_class="401_AUTH_FAILURE",
+        error_reason="MFA request denied",
+        stage="totp",
+    )
+    database.upsert_mailbox("totp-failed@outlook.com", "outlook-password", source_account_id=83)
+    database.mark_mailbox_status("totp-failed@outlook.com", "webmail_verification_required")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+    coordinator.verification_code_reader.validate_access = lambda email, password: None
+
+    class WorkingVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            return MailboxEvidence(
+                provider="outlook.live.com",
+                subject="OpenAI account deactivated",
+                received_at=None,
+                excerpt="OpenAI account deactivated",
+                screenshot=b"\x89PNG\r\n\x1a\nmail-notice",
+            )
+
+    coordinator.webmail_verifier = WorkingVerifier()
+    pending = coordinator.reserve_pending_mailbox_verifications()
+    coordinator.process_mailbox_verification_batch(pending)
+
+    log = next(log for log in database.list_logs(task_id) if log["stage"] == "mailbox_verification")
+    assert log["detail"]["screenshot_saved"] is True
+
+
+def test_pending_outlook_mailbox_verification_keeps_human_challenges_pending(database, settings):
+    settings.outlook_security_email = "recovery@163.com"
+    database.upsert_mailbox("recovery@163.com", "163-web-password")
+    database.upsert_account_snapshot(
+        {"sub2api_account_id": 17, "email": "pending@outlook.com", "status": "account_disabled"}
+    )
+    task_id, _ = database.create_task(17, trigger="test")
+    database.finish_task(task_id, status="failed", stage="account_disabled", error_reason="account_deactivated")
+    mailbox_id = database.upsert_mailbox(
+        "pending@outlook.com",
+        "outlook-password",
+        source_account_id=17,
+    )
+    database.mark_mailbox_status("pending@outlook.com", "webmail_verification_required")
+    coordinator = RecoveryCoordinator(RecoveryRuntime(database, FakeSub2API(), ReauthOAuth(), settings))
+
+    class ChallengedVerifier:
+        def find_account_disabled_message(self, email, password, *, since):
+            raise MailboxError(
+                "Microsoft requires an interactive human verification",
+                retryable=False,
+                code="webmail_human_verification_required",
+                evidence=b"\x89PNG\r\n\x1a\nmailbox-security-page",
+            )
+
+    coordinator.verification_code_reader.validate_access = lambda email, password: None
+    coordinator.webmail_verifier = ChallengedVerifier()
+    pending = coordinator.reserve_pending_mailbox_verifications()
+    coordinator.process_mailbox_verification_batch(pending)
+
+    mailbox = database.get_mailbox(mailbox_id)
+    assert mailbox["status"] == "webmail_verification_required"
+    assert "interactive human verification" in mailbox["last_error"]
+    log = next(log for log in database.list_logs(task_id) if log["stage"] == "mailbox_verification")
+    assert log["detail"]["screenshot_kind"] == "mailbox_security"
+    assert database.get_task_evidence(task_id, log["detail"]["evidence_id"])["image"].endswith(
+        b"mailbox-security-page"
+    )
 
 
 def test_disabled_browser_automation_uses_manual_authorization(database, settings):

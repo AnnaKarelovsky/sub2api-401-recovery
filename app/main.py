@@ -69,6 +69,11 @@ class MailboxPayload(BaseModel):
     password: str = Field(default="", max_length=1000)
 
 
+class MailboxVerificationRequest(BaseModel):
+    mailbox_ids: list[str] | None = Field(default=None, min_length=1, max_length=20)
+    verification_email: str | None = Field(default=None, max_length=320)
+
+
 class DeleteDisabledAccountsRequest(BaseModel):
     account_ids: list[int] = Field(min_length=1, max_length=50)
     confirmation: Literal["DELETE"]
@@ -389,6 +394,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         items = rt.db.list_mailboxes()
         return {"items": items, "total": len(items)}
+
+    @app.post("/api/v1/mailboxes/verify-pending", status_code=202)
+    def verify_pending_mailboxes(
+        background_tasks: BackgroundTasks,
+        payload: MailboxVerificationRequest | None = None,
+        rt: AppRuntime = Depends(runtime),
+        _: SessionToken = Depends(auth_required),
+    ) -> dict[str, Any]:
+        try:
+            mailbox_ids = rt.coordinator.reserve_pending_mailbox_verifications(
+                payload.mailbox_ids if payload else None,
+                verification_email=payload.verification_email if payload else None,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not mailbox_ids:
+            return {"accepted": False, "count": 0}
+        background_tasks.add_task(
+            rt.coordinator.process_mailbox_verification_batch,
+            mailbox_ids,
+            payload.verification_email if payload else None,
+        )
+        return {"accepted": True, "count": len(mailbox_ids)}
 
     @app.post("/api/v1/mailboxes", status_code=201)
     def create_mailbox(

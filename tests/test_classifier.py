@@ -15,6 +15,7 @@ def test_invalid_grant_requires_reauthorization():
 
 def test_non_auth_errors_are_not_queued_as_401():
     assert classify_failure(http_status=429, message="rate limit").category == FailureClass.RATE_LIMIT
+    assert classify_failure(message="Our servers are currently overloaded").category == FailureClass.RATE_LIMIT
     assert classify_failure(http_status=403, message="forbidden").category == FailureClass.PERMISSION
     assert classify_failure(message="proxy timeout").category == FailureClass.NETWORK
 
