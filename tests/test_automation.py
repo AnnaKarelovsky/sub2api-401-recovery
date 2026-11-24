@@ -15,6 +15,7 @@ from app.mailbox import (
     MailboxEvidence,
     OutlookWebAccountDisabledReader,
     OutlookWebCodeReader,
+    _looks_like_account_disabled_mail,
     render_mailbox_evidence_screenshot,
 )
 from app.note_credentials import NoteCredentials, parse_account_notes
@@ -81,21 +82,28 @@ def test_security_email_code_prompt_accepts_mailbox_copy_variants():
     assert OutlookWebAccountDisabledReader._is_email_code_prompt("Enter the code we sent")
 
 
-def test_outlook_account_disabled_reader_searches_and_captures_the_matching_email(settings):
+@pytest.mark.parametrize("privacy_prompt", ["absent", "before_search", "after_submit", "blocked", "unrelated"])
+def test_outlook_account_disabled_reader_searches_and_captures_the_matching_email(settings, privacy_prompt):
     screenshot = b"\x89PNG\r\n\x1a\nsource-mail-screenshot"
 
     class Search:
-        def __init__(self):
+        def __init__(self, page):
+            self.page = page
             self.values = []
+            self.submissions = 0
 
         def is_visible(self, timeout=None):
             return True
 
         def fill(self, value):
+            assert not self.page.privacy_visible or privacy_prompt == "unrelated"
             self.values.append(value)
 
         def press(self, key, timeout=None):
             assert key == "Enter"
+            self.submissions += 1
+            if privacy_prompt == "after_submit" and self.submissions == 1:
+                self.page.privacy_visible = True
 
     class Candidate:
         def is_visible(self, timeout=None):
@@ -124,17 +132,54 @@ def test_outlook_account_disabled_reader_searches_and_captures_the_matching_emai
         def inner_text(self, timeout=None):
             return "Your OpenAI account has been deactivated."
 
+    class PrivacyDialog:
+        def __init__(self, page):
+            self.page = page
+
+        def is_visible(self):
+            return False  # Fixed-position Outlook content has a zero-size modal wrapper.
+
+        def inner_text(self, timeout=None):
+            if privacy_prompt == "unrelated":
+                return "Sharing invitation. Reject or Accept."
+            return "We and various third parties process data to personalize ads and content."
+
+        def get_by_role(self, role, *, name):
+            assert role == "button"
+            if name.fullmatch("Reject"):
+                return SimpleNamespace(is_visible=lambda: self.page.privacy_visible, wait_for=lambda **kw: None)
+            assert name.fullmatch("Accept")
+            return SimpleNamespace(
+                is_visible=lambda: self.page.privacy_visible, click=self.accept, wait_for=self.wait_for,
+            )
+
+        def accept(self, timeout):
+            self.page.accepted += 1
+            if privacy_prompt != "blocked":
+                self.page.privacy_visible = False
+
+        def wait_for(self, *, state, timeout):
+            assert state == "hidden"
+            if self.page.privacy_visible:
+                raise TimeoutError
+
     class Page:
         url = "https://outlook.live.com/mail/0/inbox"
 
         def __init__(self):
-            self.search = Search()
+            self.search = Search(self)
+            self.privacy_visible = privacy_prompt in {"before_search", "blocked", "unrelated"}
+            self.accepted = 0
 
         def locator(self, selector):
-            if selector == "input[placeholder='Search']":
+            if selector == "input[placeholder*='Search' i]":
                 return Group([self.search])
             if selector == "body":
                 return Body()
+            if selector == OutlookWebAccountDisabledReader._privacy_dialog_selector:
+                return Group([PrivacyDialog(self)])
+            if selector == "[role='document']":
+                return Group([SimpleNamespace(is_visible=lambda **kw: True, inner_text=lambda **kw: "Your OpenAI account has been deactivated.")])
             return Group([])
 
         def get_by_role(self, role):
@@ -148,19 +193,130 @@ def test_outlook_account_disabled_reader_searches_and_captures_the_matching_emai
             return None
 
         def screenshot(self, **kwargs):
+            assert not self.privacy_visible or privacy_prompt == "unrelated"
             return screenshot
 
     page = Page()
-    evidence = OutlookWebAccountDisabledReader(settings)._search_for_account_disabled_message(
-        page,
-        since=datetime(2026, 10, 13, tzinfo=timezone.utc),
-        submit=True,
-    )
+    reader = OutlookWebAccountDisabledReader(settings)
+    since = datetime(2026, 10, 13, tzinfo=timezone.utc)
+    if privacy_prompt == "blocked":
+        with pytest.raises(MailboxError) as error:
+            reader._search_for_account_disabled_message(page, since=since)
+        assert error.value.code == "webmail_privacy_dialog_blocked"
+        assert page.accepted == 1
+        assert page.search.submissions == 0
+        return
 
+    evidence = reader._search_for_account_disabled_message(page, since=since)
     assert isinstance(evidence, MailboxEvidence)
     assert evidence.screenshot == screenshot
-    assert page.search.values == ["", "OpenAI"]
+    assert page.accepted == int(privacy_prompt in {"before_search", "after_submit"})
+    assert page.search.values == ["", "from:trustandsafety@tm.openai.com"] * (2 if privacy_prompt == "after_submit" else 1)
     assert render_mailbox_evidence_screenshot(evidence, settings) == screenshot
+
+
+def test_account_disabled_mail_matcher_recognizes_access_deactivated_subject():
+    assert _looks_like_account_disabled_mail(
+        "OpenAI - Access Deactivated [C-example]",
+        "",
+    )
+
+
+def test_outlook_account_disabled_reader_retries_with_access_deactivated_subject(settings):
+    screenshot = b"\x89PNG\r\n\x1a\nsource-mail-screenshot"
+
+    class Search:
+        def __init__(self):
+            self.values = []
+
+        def is_visible(self, timeout=None):
+            return True
+
+        def fill(self, value):
+            self.values.append(value)
+
+        def press(self, key, timeout=None):
+            assert key == "Enter"
+
+    class Candidate:
+        def is_visible(self, timeout=None):
+            return True
+
+        def inner_text(self, timeout=None):
+            return "OpenAI - Access Deactivated [C-D56cwNTlKMiG]"
+
+        def evaluate(self, script):
+            return ["2026-11-03T00:43:00+08:00"]
+
+        def click(self, timeout=None):
+            return None
+
+    class Group:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
+
+    class Body:
+        def inner_text(self, timeout=None):
+            return "No results"
+
+    class Page:
+        url = "https://outlook.live.com/mail/0/inbox"
+
+        def __init__(self):
+            self.search = Search()
+            self.candidate = Candidate()
+
+        def locator(self, selector):
+            if selector == "input[placeholder*='Search' i]":
+                return Group([self.search])
+            if selector == "body":
+                return Body()
+            if selector == "[role='document']":
+                return Group([SimpleNamespace(is_visible=lambda **kw: True, inner_text=lambda **kw: "Your OpenAI account has been deactivated.")])
+            return Group([])
+
+        def get_by_role(self, role):
+            assert role == "option"
+            query = self.search.values[-1] if self.search.values else ""
+            return Group([self.candidate] if query == 'subject:"Access Deactivated"' else [])
+
+        def get_by_text(self, pattern, exact=False):
+            return Group([SimpleNamespace(
+                is_visible=lambda **kw: True,
+                inner_text=lambda **kw: "OpenAI",
+                click=lambda **kw: pytest.fail("The sender name opens a contact card"),
+            )])
+
+        def wait_for_timeout(self, timeout):
+            return None
+
+        def screenshot(self, **kwargs):
+            return screenshot
+
+    page = Page()
+    reader = OutlookWebAccountDisabledReader(settings)
+    evidence = reader._search_for_account_disabled_message(
+        page,
+        since=datetime(2026, 11, 2, tzinfo=timezone.utc),
+    )
+
+    assert evidence is not None
+    assert evidence.subject == "OpenAI - Access Deactivated [C-D56cwNTlKMiG]"
+    assert evidence.screenshot == screenshot
+    assert page.search.values == [
+        "",
+        "from:trustandsafety@tm.openai.com",
+        "",
+        'subject:"Access Deactivated"',
+    ]
+    assert reader.last_search_diagnostics["mail_search_query_count"] == "2"
+    assert reader.last_search_diagnostics["mail_search_candidate_count"] == "1"
 
 
 def test_outlook_web_code_reader_parses_locale_received_time(settings):

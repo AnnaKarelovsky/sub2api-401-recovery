@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.21 - 2026-11-24
+
+- Continue Outlook mailbox verification after accepting the privacy notice, including when it appears during a search.
+- Search for deactivation notices by sender and subject, and open message rows directly to avoid triggering contact cards.
+- Report blocked or incomplete Outlook searches separately from completed searches with no matching message.
+
 ## 0.4.20 - 2026-10-18
 
 - Classified account-deactivated MFA responses even when the browser error page does not render.

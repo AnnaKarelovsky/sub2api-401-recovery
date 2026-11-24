@@ -28,6 +28,7 @@ class MailboxError(RuntimeError):
         code: str = "",
         evidence: bytes | None = None,
         evidence_error: str | None = None,
+        diagnostics: dict[str, str] | None = None,
     ):
         super().__init__(reason)
         self.reason = safe_error(reason)
@@ -35,6 +36,7 @@ class MailboxError(RuntimeError):
         self.code = code
         self.evidence = evidence
         self.evidence_error = safe_error(evidence_error) if evidence_error else None
+        self.diagnostics = diagnostics or {}
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,14 @@ class ImapAccountDisabledReader:
 class OutlookWebAccountDisabledReader:
     """Read account-status mail through Outlook Web when IMAP basic auth is unavailable."""
 
+    _mail_search_selectors = (
+        "input[placeholder*='Search' i]",
+        "input[placeholder*='搜索']",
+        "input[aria-label*='Search' i]",
+        "input[aria-label*='搜索']",
+        "input[role='combobox']",
+    )
+
     def __init__(
         self,
         settings: Settings,
@@ -158,6 +168,7 @@ class OutlookWebAccountDisabledReader:
         self.settings = settings
         self.mailbox_lookup = mailbox_lookup
         self.code_reader = code_reader or ImapCodeReader(settings)
+        self.last_search_diagnostics: dict[str, str] = {}
 
     def find_account_disabled_message(
         self,
@@ -231,9 +242,7 @@ class OutlookWebAccountDisabledReader:
         deadline = time.monotonic() + max(60, int(self.settings.mail_code_timeout_seconds))
         email_submitted = False
         password_submitted = False
-        authenticated = False
         security_email_attempted = False
-        last_search_refresh = 0.0
         last_body = ""
         page.goto(
             "https://outlook.live.com/mail/0/?prompt=select_account",
@@ -241,6 +250,8 @@ class OutlookWebAccountDisabledReader:
             timeout=60_000,
         )
         while time.monotonic() < deadline:
+            if self._mailbox_ready(page):
+                return self._search_for_account_disabled_message(page, since=since)
             try:
                 body = " ".join(page.locator("body").inner_text(timeout=5000).split())
             except Exception:
@@ -286,15 +297,6 @@ class OutlookWebAccountDisabledReader:
                 _click_matching(page, ("no", "否", "not now", "稍后"))
                 page.wait_for_timeout(1000)
                 continue
-            if _looks_like_account_disabled_mail("", body):
-                return MailboxEvidence(
-                    provider="outlook.live.com",
-                    subject="OpenAI account-status message found in Outlook Webmail",
-                    received_at=None,
-                    excerpt=_safe_mail_text(body, limit=720),
-                    screenshot=page.screenshot(type="png", full_page=True, animations="disabled"),
-                )
-
             email_locator = _first_visible(
                 page,
                 ("input[name='loginfmt']", "#i0116", "input[type='email']", "input[autocomplete='username']"),
@@ -324,26 +326,6 @@ class OutlookWebAccountDisabledReader:
                 password_submitted = True
                 page.wait_for_timeout(1200)
                 continue
-            if (
-                password_submitted
-                and email_locator is None
-                and password_locator is None
-                and not self._is_login_flow_url(page.url)
-            ):
-                authenticated = True
-            if authenticated:
-                refresh_search = time.monotonic() - last_search_refresh >= max(
-                    5, self.settings.mail_poll_seconds
-                )
-                evidence = self._search_for_account_disabled_message(
-                    page,
-                    since=since,
-                    submit=refresh_search,
-                )
-                if refresh_search:
-                    last_search_refresh = time.monotonic()
-                if evidence:
-                    return evidence
             remaining_ms = max(250, int((deadline - time.monotonic()) * 1000))
             page.wait_for_timeout(min(max(500, self.settings.mail_poll_seconds * 1000), remaining_ms))
 
@@ -375,8 +357,8 @@ class OutlookWebAccountDisabledReader:
                 retryable=False,
                 code="webmail_login_rejected",
             )
-        if authenticated or (password_submitted and not self._is_login_flow_url(page.url)):
-            return None
+        if self._mailbox_ready(page):
+            return self._search_for_account_disabled_message(page, since=since)
         path = self._safe_page_path(page.url)
         raise MailboxError(
             f"Outlook Webmail did not complete the login flow (path={path})",
@@ -384,72 +366,209 @@ class OutlookWebAccountDisabledReader:
             code="webmail_login_incomplete",
         )
 
+    @staticmethod
+    def _is_outlook_mailbox_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname in {"outlook.live.com", "outlook.office.com"}
+            and parsed.path.lower().startswith("/mail/")
+        )
+
+    def _mailbox_ready(self, page: Any) -> bool:
+        if not self._is_outlook_mailbox_url(page.url):
+            return False
+        search = _first_visible(page, self._mail_search_selectors)
+        shell = _first_visible(page, (
+            "[role='listbox']", "[role='main']", "button[aria-label*='New mail' i]",
+            "button[aria-label*='新邮件']", "[data-app-section='MailList']",
+        ))
+        return search is not None and shell is not None
+
+    _privacy_dialog_selector = "dialog[open], [role='dialog'], [role='alertdialog'], [aria-modal='true']"
+
+    def _accept_outlook_privacy_dialog(self, page: Any) -> bool:
+        if not self._is_outlook_mailbox_url(page.url):
+            return False
+        dialogs = page.locator(self._privacy_dialog_selector)
+        for index in range(dialogs.count()):
+            dialog = dialogs.nth(index)
+            copy = " ".join(dialog.inner_text(timeout=1000).lower().split())
+            if not ("various third parties process data" in copy and "personalize ads and content" in copy):
+                continue
+            accept = dialog.get_by_role("button", name=re.compile(r"^accept(?: all)?$", re.I))
+            reject = dialog.get_by_role("button", name=re.compile(r"^reject(?: all)?$", re.I))
+            # Outlook positions the notice inside a modal wrapper that can have
+            # an empty bounding box even while its controls are on screen.
+            if not (accept.is_visible() or reject.is_visible()):
+                continue
+            try:
+                reject.wait_for(state="visible", timeout=3000)
+                accept.click(timeout=3000)
+                accept.wait_for(state="hidden", timeout=5000)
+            except Exception as exc:
+                raise MailboxError(
+                    "已进入 Outlook 收件箱，隐私弹窗未关闭，邮件搜索暂停。",
+                    code="webmail_privacy_dialog_blocked",
+                    diagnostics={"mailbox_step": "privacy_dialog"},
+                ) from exc
+            return True
+        return False
+
+    @staticmethod
+    def _submit_mail_search(page: Any, search: Any, query: str) -> None:
+        search.fill("")
+        search.fill(query)
+        if not _press_enter(search):
+            _click_matching(page, ("search", "搜索"))
+        page.wait_for_timeout(1200)
+
     def _search_for_account_disabled_message(
         self,
         page: Any,
         *,
         since: datetime,
-        submit: bool,
     ) -> MailboxEvidence | None:
-        search = _first_visible(
-            page,
-            (
-                "input[placeholder='Search']",
-                "input[placeholder*='Search' i]",
-                "input[placeholder*='搜索']",
-                "input[aria-label*='Search' i]",
-                "input[aria-label*='搜索']",
-                "input[role='combobox']",
-            ),
-        )
+        self.last_search_diagnostics = {}
+        self._accept_outlook_privacy_dialog(page)
+        search = _first_visible(page, self._mail_search_selectors)
         if search is None:
-            return None
-        if submit:
-            search.fill("")
-            search.fill("OpenAI")
-            if not _press_enter(search):
-                _click_matching(page, ("search", "搜索"))
-            page.wait_for_timeout(1200)
+            raise MailboxError(
+                "Outlook mailbox search is not ready",
+                code="webmail_search_incomplete",
+                diagnostics={"mailbox_step": "mail_search"},
+            )
 
-        candidates: list[Any] = []
-        options = page.get_by_role("option")
-        for index in range(min(options.count(), 40)):
-            candidate = options.nth(index)
-            try:
-                if candidate.is_visible(timeout=250):
-                    row_text = candidate.inner_text(timeout=500)
-                    if re.search(r"openai|chatgpt|codex", row_text, re.I):
-                        candidates.append(candidate)
-            except Exception:
-                continue
-        subjects = page.get_by_text(re.compile(r"openai|chatgpt|codex", re.I), exact=False)
-        for index in range(min(subjects.count(), 20)):
-            candidates.append(subjects.nth(index))
+        queries = (
+            "from:trustandsafety@tm.openai.com",
+            'subject:"Access Deactivated"',
+            "OpenAI",
+        )
+        searched_queries: list[str] = []
+        candidate_count = 0
+        old_candidate_count = 0
+        candidate_error_count = 0
+        diagnostic_subject_pattern = re.compile(
+            r"openai|chatgpt|codex|access\s+deactivated", re.I
+        )
 
-        for candidate in candidates:
-            try:
-                if not candidate.is_visible(timeout=250):
-                    continue
-                row_text = candidate.inner_text(timeout=500)
-                received_at = OutlookWebCodeReader._message_received_at(candidate)
-                if received_at is not None and received_at < since:
-                    continue
-                candidate.click(timeout=2000)
-                page.wait_for_timeout(500)
-                body = " ".join(page.locator("body").inner_text(timeout=3000).split())
-                if not _looks_like_account_disabled_mail(row_text, body):
-                    continue
-                subject = _safe_mail_text(row_text, limit=240) or "OpenAI account-status message"
-                return MailboxEvidence(
-                    provider="outlook.live.com",
-                    subject=subject,
-                    received_at=received_at,
-                    excerpt=_safe_mail_text(body, limit=720),
-                    screenshot=page.screenshot(type="png", full_page=True, animations="disabled"),
+        def save_diagnostics() -> None:
+            self.last_search_diagnostics = {
+                "mail_search_available": "true",
+                "mail_search_query_count": str(len(searched_queries)),
+                "mail_search_queries": " | ".join(searched_queries),
+                "mail_search_candidate_count": str(candidate_count),
+                "mail_search_old_candidate_count": str(old_candidate_count),
+                "mail_search_candidate_error_count": str(candidate_error_count),
+            }
+
+        for query in queries:
+            self._accept_outlook_privacy_dialog(page)
+            self._submit_mail_search(page, search, query)
+            searched_queries.append(query)
+            search_deadline = time.monotonic() + 8
+            retried_after_privacy = False
+            while time.monotonic() < search_deadline:
+                if self._accept_outlook_privacy_dialog(page) and not retried_after_privacy:
+                    retried_after_privacy = True
+                    self._submit_mail_search(page, search, query)
+                    search_deadline = time.monotonic() + 8
+                if page.get_by_role("option").count() > 0:
+                    break
+                result_body = self._page_body(page).lower()
+                if any(marker in result_body for marker in (
+                    "no results", "we didn't find", "couldn't find", "didn't find anything",
+                    "未找到", "没有找到", "没有结果", "找不到任何", "未搜索到",
+                )):
+                    break
+                page.wait_for_timeout(250)
+            else:
+                save_diagnostics()
+                raise MailboxError(
+                    "Outlook 邮件搜索未完成，不能判断是否存在封号邮件。",
+                    code="webmail_search_incomplete",
+                    diagnostics={"mailbox_step": "mail_search", **self.last_search_diagnostics},
                 )
-            except Exception:
-                continue
+
+            # Text matches also include sender buttons in the reading pane. Open
+            # the message rows directly so a sender's contact card cannot block us.
+            options = page.get_by_role("option")
+            seen_rows: set[str] = set()
+            for index in range(min(options.count(), 40)):
+                candidate = options.nth(index)
+                try:
+                    if not candidate.is_visible(timeout=250):
+                        continue
+                    row_text = " ".join(candidate.inner_text(timeout=500).split())
+                    if not diagnostic_subject_pattern.search(row_text):
+                        continue
+                    row_key = row_text.casefold()
+                    if row_key in seen_rows:
+                        continue
+                    seen_rows.add(row_key)
+                    candidate_count += 1
+                    received_at = OutlookWebCodeReader._message_received_at(candidate)
+                    if received_at is not None and received_at < since:
+                        old_candidate_count += 1
+                        continue
+                    self._accept_outlook_privacy_dialog(page)
+                    try:
+                        candidate.click(timeout=2000)
+                    except Exception:
+                        if not self._accept_outlook_privacy_dialog(page):
+                            raise
+                        candidate.click(timeout=2000)
+                    body = self._opened_message_body(page)
+                    if not _looks_like_account_disabled_mail(row_text, body):
+                        continue
+                    self._accept_outlook_privacy_dialog(page)
+                    subject = _safe_mail_text(row_text, limit=240) or "OpenAI account-status message"
+                    save_diagnostics()
+                    return MailboxEvidence(
+                        provider="outlook.live.com",
+                        subject=subject,
+                        received_at=received_at,
+                        excerpt=_safe_mail_text(body, limit=720),
+                        screenshot=page.screenshot(type="png", full_page=True, animations="disabled"),
+                    )
+                except MailboxError as exc:
+                    if exc.code == "webmail_privacy_dialog_blocked":
+                        raise
+                    candidate_error_count += 1
+                except Exception:
+                    candidate_error_count += 1
+                    continue
+        save_diagnostics()
+        if candidate_error_count:
+            raise MailboxError(
+                "Outlook 未能读完匹配的邮件，邮箱核验未完成。",
+                code="webmail_search_incomplete",
+                diagnostics={"mailbox_step": "mail_message_read", **self.last_search_diagnostics},
+            )
         return None
+
+    @staticmethod
+    def _opened_message_body(page: Any) -> str:
+        deadline = time.monotonic() + 15
+        selectors = (
+            "[role='document']", "[aria-label*='Message body' i]", "[aria-label*='邮件正文']",
+            "[id^='UniqueMessageBody']", "[data-testid='message-body']",
+        )
+        while time.monotonic() < deadline:
+            for selector in selectors:
+                nodes = page.locator(selector)
+                for index in range(min(nodes.count(), 5)):
+                    node = nodes.nth(index)
+                    if node.is_visible(timeout=200):
+                        text = " ".join(node.inner_text(timeout=1000).split())
+                        if len(text) >= 30:
+                            return text
+            page.wait_for_timeout(250)
+        raise MailboxError(
+            "Outlook 邮件正文未完成加载，暂不能保存核验结果。",
+            code="webmail_search_incomplete",
+            diagnostics={"mailbox_step": "mail_body_load"},
+        )
 
     @staticmethod
     def _is_security_prompt(body: str) -> bool:
@@ -1836,6 +1955,8 @@ def _looks_like_account_disabled_mail(subject: str, body: str) -> bool:
     return any(
         marker in text
         for marker in (
+            "access deactivated",
+            "access has been deactivated",
             "account deactivated",
             "account has been deactivated",
             "account has been deleted",

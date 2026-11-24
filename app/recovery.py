@@ -251,7 +251,9 @@ class RecoveryCoordinator:
                         "message_found": False,
                         "access_method": "Outlook Web",
                         "mailbox_status": status,
+                        "error_code": exc.code,
                         "reason": safe_error(exc),
+                        **exc.diagnostics,
                     }
                     if evidence_id:
                         detail.update(
@@ -271,7 +273,11 @@ class RecoveryCoordinator:
                     self._append_batch_mailbox_log(
                         source_task,
                         level="WARNING",
-                        message="未能读取邮箱中的 OpenAI 账号停用通知；账号停用结论未改变。",
+                        message=(
+                            exc.reason
+                            if exc.code in {"webmail_privacy_dialog_blocked", "webmail_search_incomplete"}
+                            else "未能读取邮箱中的 OpenAI 账号停用通知；账号停用结论未改变。"
+                        ),
                         detail=detail,
                     )
                 except Exception as exc:
@@ -1520,15 +1526,21 @@ class RecoveryCoordinator:
                     message = (
                         "Outlook 网页邮箱需要完成额外安全验证，暂未完成邮件核验。"
                         if web_exc.code == "webmail_security_required"
+                        else web_exc.reason
+                        if web_exc.code in {"webmail_privacy_dialog_blocked", "webmail_search_incomplete"}
                         else "IMAP 和 Outlook Web 都未完成邮箱核验，不改变账号停用结论。"
                     )
                     detail = {
-                        "mailbox_checked": True,
+                        "mailbox_checked": False,
                         "imap_login_succeeded": False,
-                        "webmail_login_confirmed": False,
+                        "webmail_login_confirmed": web_exc.code in {
+                            "webmail_privacy_dialog_blocked", "webmail_search_incomplete",
+                        },
                         "access_method": "Outlook Web",
                         "mailbox_status": webmail_status,
+                        "error_code": web_exc.code,
                         "reason": safe_error(web_exc),
+                        **web_exc.diagnostics,
                     }
                     if evidence_id:
                         detail.update(
